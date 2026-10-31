@@ -195,3 +195,47 @@ test("a share link opens the same design", async ({ page, context }) => {
   expect(await other.evaluate(() => JSON.parse(JSON.stringify(window.__app.design)))).toEqual(d);
   await expect(other.locator("#status")).toHaveText("Opened a shared design", { timeout: 60000 });
 });
+
+test("a picked tray gets its own handles: drag them to resize with soft stops, then copy it and a divider", async ({ page }) => {
+  await waitForBuild(page, 0);
+  await page.locator("#d-height").fill("60");
+  await page.locator("#d-height").press("Enter");
+  await page.locator('[data-tab="trays"]').click();
+  await page.locator("#add-tray").click();
+  await page.locator("#t-w").fill("40"); await page.locator("#t-w").press("Enter");
+  await page.locator("#t-d").fill("30"); await page.locator("#t-d").press("Enter");
+  const id = (await design(page)).trays[0].id;
+  // The handles moved off the box onto the tray.
+  const h = await page.evaluate(() => window.__app.view.handles);
+  expect(h.part).toBe(id);
+
+  // Drag the width handle out by about 19 mm: it sticks at 60 mm.
+  const at = p => page.evaluate(p => window.__app.view.screenPoint(p), p);
+  await dragFromTo(page, await at(h.width), await at([h.width[0] + 19, h.width[1], h.width[2]]), 8);
+  let t = (await design(page)).trays[0];
+  expect(t).toMatchObject({ x: 0.25, w: 60 });
+  // The height handle: drag up about 15 mm to 35 mm.
+  const hh = await page.evaluate(() => window.__app.view.handles.height);
+  await dragFromTo(page, await at(hh), await at([hh[0], hh[1], hh[2] + 15]), 8);
+  t = (await design(page)).trays[0];
+  expect(t.height).toBe(35);
+  await expect(page.locator("#t-w")).toHaveValue("60");
+
+  // Copy the tray: the copy is picked, the same size, on the floor beside it.
+  await page.locator("#t-copy").click();
+  let d = await design(page);
+  expect(d.trays).toHaveLength(2);
+  expect(d.trays[1]).toMatchObject({ w: 60, d: 30, height: 35 });
+  await expect(page.locator("#quick-name")).toHaveText("Tray 2");
+
+  // Back on the box, its handles come back.
+  await page.locator("#part-list .part").first().evaluate(b => b.click());
+  expect((await page.evaluate(() => window.__app.view.handles)).part).toBe("box");
+
+  // Copy a box divider.
+  await page.locator('.part[data-pick*="divider"]').first().evaluate(b => b.click());
+  await page.locator("#sel-copy").click();
+  d = await design(page);
+  expect(d.dividers).toHaveLength(2);
+  await expect(page.locator("#quick-name")).toHaveText("Divider 2 in box");
+});
