@@ -35,7 +35,7 @@ export const DEFAULT_DESIGN = {
 };
 
 export const DIVIDER_STYLES = [
-  { id: "slot", name: "Slot-in dividers", desc: "Printed flat as separate pieces; they slide into channels in the floor and walls." },
+  { id: "slot", name: "Slot-in dividers", desc: "Printed flat as separate pieces; they slide down into grooves in the floor and walls. A thicker floor and walls give deeper grooves." },
   { id: "fixed", name: "Printed in", desc: "Printed as part of the box or tray." },
 ];
 
@@ -304,29 +304,38 @@ export function cornerInset(d, lo, hi, S) {
   return r - Math.sqrt(Math.max(0, r * r - (r - Math.max(0, u)) ** 2));
 }
 
-export const RAIL = { width: 1.2, height: 2, wall: 1.5 }; // the ribs that make a channel, mm
+/**
+ * How deep the grooves for slot-in dividers go: into the floor, leaving at
+ * least 0.6 mm under them, and into the walls, leaving at least 0.8 mm. A
+ * thicker floor or wall gives a deeper groove.
+ */
+export function grooveDepth(d) {
+  return { floor: round(Math.max(0, d.floor - 0.6)), wall: round(Math.max(0, d.wall - 0.8)) };
+}
 
 /**
  * How a part's (the box's or a tray's) dividers become separate pieces and
- * the channels they slot into. All in the part's frame: centred on X = Y = 0,
+ * the grooves they slot into. All in the part's frame: centred on X = Y = 0,
  * its bottom on Z = 0, like `dividerBoxes`.
  *
  * pieces: [{ id, axis, at, a, b, z0, z1, notches: [{ at, z0, z1, w }] }], each
  * piece running from `a` to `b` along its length (from the inside front or left
- * wall). Where two dividers cross, each gets a notch halfway (front-to-back
- * ones from the top, side-to-side ones from the bottom) so they slide together.
- * Ends at a wall stop a gap short of it; ends at another divider stop a gap
- * short of its face.
+ * wall) and standing in the floor groove from z0. Ends at a wall reach into
+ * its groove, a gap short of the bottom; ends at another divider stop a gap
+ * short of its face. Where two dividers cross, each gets a notch halfway
+ * (front-to-back ones from the top, side-to-side ones from the bottom) so they
+ * slide together.
  *
- * rails: [{ min, max }] boxes to add to the part: a pair of low ribs along the
- * floor either side of each divider, and a pair of upright ribs on each wall
- * it meets.
+ * grooves: [{ min, max, mark }] boxes to cut from the part: one along the floor
+ * under each divider, and one up each wall it meets, open at the top so the
+ * divider slides down into it. `mark` is a thin box on the surface, for the
+ * 3D view to draw where the groove is.
  */
 export function slotLayout(d) {
   const i = inner(d), t = d.divider, c = d.clearance, cap = d.dividerTop ?? d.height;
-  const R = RAIL.width, off = t / 2 + c + R / 2;
+  const g = grooveDepth(d), W = t + 2 * c;
   const top = x => Math.min(cap, x.height != null ? d.floor + x.height : d.height);
-  const pieces = [], rails = [];
+  const pieces = [], grooves = [];
   for (const x of d.dividers) {
     const [f, e] = ends(d, x), S = span(d, other(x.axis)), P = span(d, x.axis);
     const across = d.dividers.filter(o => o.axis !== x.axis && o.id !== x.id);
@@ -336,42 +345,32 @@ export function slotLayout(d) {
       return across.some(o => meets(o) && Math.abs(o.at - v) < 0.05) ? "divider" : "free";
     };
     const kinds = [endAt(f), endAt(e)];
-    // Near a corner the rounded wall comes further in, so the piece stops short of that too.
-    const inset = cornerInset(d, x.at - t / 2, x.at + t / 2, P);
-    const a = kinds[0] === "wall" ? c + inset : kinds[0] === "divider" ? f + t / 2 + c : f;
-    const b = kinds[1] === "wall" ? S - c - inset : kinds[1] === "divider" ? e - t / 2 - c : e;
-    const z1 = top(x), notches = [];
+    // Near a corner the rounded wall comes further in, so the groove and piece start there.
+    const k = cornerInset(d, x.at - W / 2, x.at + W / 2, P);
+    const a = kinds[0] === "wall" ? k - g.wall + c : kinds[0] === "divider" ? f + t / 2 + c : f;
+    const b = kinds[1] === "wall" ? S - k + g.wall - c : kinds[1] === "divider" ? e - t / 2 - c : e;
+    const z0 = d.floor - g.floor, z1 = top(x), notches = [];
     for (const o of across) {
       const [o0, o1] = ends(d, o);
       // A crossing: each passes right through the other.
       if (!(o.at > f + 0.05 && o.at < e - 0.05 && x.at > o0 + 0.05 && x.at < o1 - 0.05)) continue;
       const mid = d.floor + (Math.min(z1, top(o)) - d.floor) / 2;
-      notches.push(x.axis === "x" ? { at: o.at, z0: mid, z1, w: t + 2 * c } : { at: o.at, z0: d.floor, z1: mid, w: t + 2 * c });
+      notches.push(x.axis === "x" ? { at: o.at, z0: mid, z1, w: W } : { at: o.at, z0, z1: mid, w: W });
     }
-    pieces.push({ id: x.id, axis: x.axis, at: x.at, a, b, z0: d.floor, z1, notches });
+    pieces.push({ id: x.id, axis: x.axis, at: x.at, a, b, z0, z1, notches });
 
-    // Floor ribs, broken where another divider crosses or meets this one.
-    const cuts = across.filter(meets).map(o => [o.at - t / 2 - c - R - 0.1, o.at + t / 2 + c + R + 0.1]).sort((p, q) => p[0] - q[0]);
-    const box = (u0, u1, v0, v1, z0, zz) => x.axis === "x"
-      ? { min: [-i.w / 2 + u0, -i.d / 2 + v0, z0], max: [-i.w / 2 + u1, -i.d / 2 + v1, zz] }
-      : { min: [-i.w / 2 + v0, -i.d / 2 + u0, z0], max: [-i.w / 2 + v1, -i.d / 2 + u1, zz] };
-    for (const side of [-1, 1]) {
-      const u = x.at + side * off, u0 = u - R / 2, u1 = u + R / 2;
-      if (u0 < 0 || u1 > P) continue;
-      // Start each rib where the wall is, which is further in at a rounded corner.
-      const k = cornerInset(d, u0, u1, P);
-      const runs = [];
-      let from = kinds[0] === "wall" ? k - 0.5 : a;
-      const to = kinds[1] === "wall" ? S - k + 0.5 : b;
-      for (const [c0, c1] of cuts) { if (c0 > from) runs.push([from, Math.min(c0, to)]); from = Math.max(from, c1); }
-      if (to > from) runs.push([from, to]);
-      for (const [v0, v1] of runs) if (v1 - v0 > 0.5) rails.push(box(u0, u1, v0, v1, d.floor - 0.01, d.floor + RAIL.height));
-      // Upright ribs on the walls it meets.
-      if (kinds[0] === "wall") rails.push(box(u0, u1, k - 0.5, k + RAIL.wall, d.floor - 0.01, z1));
-      if (kinds[1] === "wall") rails.push(box(u0, u1, S - k - RAIL.wall, S - k + 0.5, d.floor - 0.01, z1));
+    const box = (v0, v1, zz0, zz1) => x.axis === "x"
+      ? { min: [-i.w / 2 + x.at - W / 2, -i.d / 2 + v0, zz0], max: [-i.w / 2 + x.at + W / 2, -i.d / 2 + v1, zz1] }
+      : { min: [-i.w / 2 + v0, -i.d / 2 + x.at - W / 2, zz0], max: [-i.w / 2 + v1, -i.d / 2 + x.at + W / 2, zz1] };
+    const groove = (v0, v1, zz0, zz1, mark) => grooves.push({ ...box(v0, v1, zz0, zz1), mark: box(...mark) });
+    const v0 = kinds[0] === "wall" ? k - g.wall : a - c, v1 = kinds[1] === "wall" ? S - k + g.wall : b + c;
+    if (g.floor > 0) groove(v0, v1, z0, d.floor + 0.01, [Math.max(v0, k), Math.min(v1, S - k), d.floor + 0.02, d.floor + 0.08]);
+    if (g.wall > 0) {
+      if (kinds[0] === "wall") groove(k - g.wall, k + 0.01, z0, d.height + 1, [k + 0.02, k + 0.08, d.floor, d.height]);
+      if (kinds[1] === "wall") groove(S - k - 0.01, S - k + g.wall, z0, d.height + 1, [S - k - 0.08, S - k - 0.02, d.floor, d.height]);
     }
   }
-  return { pieces, rails };
+  return { pieces, grooves };
 }
 
 /** A tray as a box of its own, so the same divider tools work on it. */

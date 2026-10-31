@@ -48,6 +48,7 @@ export function createView(host, { onSelect, onDivider, onDividerEnd, onTray, on
   // Handles draw on top of everything, so one behind a wall can still be seen and grabbed.
   const handleMat = new THREE.MeshStandardMaterial({ color: HANDLE, roughness: 0.4, depthTest: false });
   const hitMat = new THREE.MeshBasicMaterial({ visible: false });
+  const grooveMat = new THREE.MeshBasicMaterial({ color: 0x1d2733, transparent: true, opacity: 0.45 });
 
   // `selected` is { kind: "box" | "lid" | "tray" | "divider", id, parent }, a
   // divider's parent being "box" or its tray's id.
@@ -100,15 +101,14 @@ export function createView(host, { onSelect, onDivider, onDividerEnd, onTray, on
 
   // Dividers of one part (the box or a tray), in that part's own frame.
   function drawDividers(holder, part, parent, r) {
-    // Slot-in dividers: the ribs that make each one's channel move with it,
-    // and each piece only as long as it prints.
+    // Slot-in dividers: a dark line marks each groove, and moves with it;
+    // each piece is drawn only as long as it prints.
     const slot = part.dividerStyle !== "fixed" && slotLayout(part);
-    if (slot) for (const b of slot.rails) {
+    if (slot) for (const { mark: b } of slot.grooves) {
       const size = b.max.map((v, k) => v - b.min[k]);
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(...size), parent === "box" ? plastic : trayMat);
-      rail.position.set(...b.min.map((v, k) => v + size[k] / 2));
-      rail.userData.rail = true;
-      holder.add(rail);
+      const line = new THREE.Mesh(new THREE.BoxGeometry(...size), grooveMat);
+      line.position.set(...b.min.map((v, k) => v + size[k] / 2));
+      holder.add(line);
     }
     const pi = inner(part);
     for (const b of dividerBoxes(part)) {
