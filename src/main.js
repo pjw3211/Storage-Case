@@ -3,7 +3,7 @@
 // as an STL ready to print.
 import { cad } from "./cad/client.js";
 import { createView } from "./view.js";
-import { DEFAULT_DESIGN, LIMITS, LIDS, TEMPLATES, IN, MAX_TRAYS, TRAY_HEIGHT, normalize, gridDividers, moveDivider, addDivider, dividerRange,
+import { DEFAULT_DESIGN, LIMITS, LIDS, TEMPLATES, IN, MAX_TRAYS, TRAY_HEIGHT, normalize, gridDividers, moveDivider, placeDivider, setDividerEnd, turnDivider, fullLength, addDivider, dividerRange,
   inner, summary, partOf, withPart, addTray, ledgeTop } from "./design.js";
 
 const $ = id => document.getElementById(id);
@@ -34,7 +34,11 @@ for (const b of document.querySelectorAll("[data-units]")) b.onclick = () => {
 // ---- the 3D view ------------------------------------------------------------------
 const view = createView($("view"), {
   onDivider(id, at, done) {
-    if (!done) { state.design = withPart(state.design, state.editing, moveDivider(part(), id, at)); view.setDesign(part()); renderSelected(); return; }
+    if (!done) { state.design = withPart(state.design, state.editing, placeDivider(part(), id, at.at, at.mid)); view.setDesign(part()); renderSelected(); return; }
+    state.template = null; save(); renderTemplates(); renderSummary();
+  },
+  onDividerEnd(id, which, value, done) {
+    if (!done) { state.design = withPart(state.design, state.editing, setDividerEnd(part(), id, which, value)); view.setDesign(part()); return; }
     state.template = null; save(); renderTemplates(); renderSummary();
   },
   onResize(change, done) {
@@ -169,7 +173,12 @@ function renderSelected() {
       <div class="sl"><label for="sel-h">Height</label><output id="o-sel-h">${h >= full ? "Full height" : text(h)}</output>
         <input type="range" id="sel-h" min="3" max="${Math.floor(full)}" step="1" value="${Math.min(h, Math.floor(full))}"></div>
     </div>
-    <div class="row"><button class="btn danger" id="sel-delete" type="button">Delete divider</button></div>`;
+    <div class="row">
+      <button class="btn" id="sel-turn" type="button">Turn 90°</button>
+      <button class="btn" id="sel-full" type="button">Wall to wall</button>
+      <button class="btn danger" id="sel-delete" type="button">Delete</button>
+    </div>
+    <p class="hint">Drag the divider anywhere, or drag its orange end dots to make it longer or shorter. Ends snap to the walls and to other dividers.</p>`;
   $("sel-at").oninput = () => { state.design = withPart(state.design, state.editing, moveDivider(part(), div.id, +$("sel-at").value)); view.setDesign(part()); renderSelected(); };
   $("sel-at").onchange = () => { state.template = null; save(); renderTemplates(); };
   $("sel-h").oninput = () => { const v = +$("sel-h").value; $("o-sel-h").textContent = v >= Math.floor(full) ? "Full height" : text(v); };
@@ -178,6 +187,9 @@ function renderSelected() {
     const p = part();
     setDesign(withPart(state.design, state.editing, { ...p, dividers: p.dividers.map(x => x.id === div.id ? (v >= Math.floor(full) ? { id: x.id, axis: x.axis, at: x.at } : { ...x, height: v }) : x) }));
   };
+  const change = f => { state.template = null; setDesign(withPart(state.design, state.editing, f(part(), div.id))); $("selected").dataset.id = ""; renderSelected(); };
+  $("sel-turn").onclick = () => change(turnDivider);
+  $("sel-full").onclick = () => change(fullLength);
   $("sel-delete").onclick = () => {
     selected = null; view.select(null);
     state.template = null;

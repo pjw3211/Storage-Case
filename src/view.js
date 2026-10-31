@@ -8,14 +8,14 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { inner } from "./design.js";
+import { inner, ends } from "./design.js";
 import { dividerBoxes } from "./cad/case.js";
 
 const PLASTIC = 0x4f86c6, PICKED = 0xe8743b, HANDLE = 0xe8743b;
 const HANDLE_GAP = 10; // mm between a wall and its handle
 const GAP = 20; // mm between the parts laid out side by side
 
-export function createView(host, { onDivider, onResize, onSelect }) {
+export function createView(host, { onDivider, onDividerEnd, onResize, onSelect }) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -100,7 +100,9 @@ export function createView(host, { onDivider, onResize, onSelect }) {
   function setDesign(d) {
     design = d;
     clear(dividerHolder); clear(handleHolder);
+    const r = Math.max(3.5, Math.max(d.width, d.depth, d.height) * 0.035);
     for (const b of dividerBoxes(d)) {
+      const axis = d.dividers.find(x => x.id === b.id).axis;
       const size = b.max.map((v, k) => v - b.min[k]);
       const z0 = d.floor - 0.01, h = b.max[2] - z0;
       const mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], h), b.id === selected ? picked : plastic);
@@ -108,12 +110,25 @@ export function createView(host, { onDivider, onResize, onSelect }) {
       mesh.castShadow = mesh.receiveShadow = true;
       // A wider invisible box makes thin dividers easy to grab with a finger.
       const grab = Math.max(8, Math.min(d.width, d.depth) * 0.08);
-      const hit = new THREE.Mesh(new THREE.BoxGeometry(Math.max(size[0], size[0] < size[1] ? grab : 0), Math.max(size[1], size[1] < size[0] ? grab : 0), h + 4), hitMat);
+      const hit = new THREE.Mesh(new THREE.BoxGeometry(axis === "x" ? Math.max(size[0], grab) : size[0], axis === "y" ? Math.max(size[1], grab) : size[1], h + 4), hitMat);
       hit.position.copy(mesh.position);
       hit.userData = { divider: b.id };
       dividerHolder.add(mesh, hit);
+      // The picked divider gets a handle on each end to make it longer or shorter.
+      if (b.id === selected) {
+        const k = axis === "x" ? 1 : 0;
+        for (const [which, v] of [["from", b.min[k]], ["to", b.max[k]]]) {
+          const p = [mesh.position.x, mesh.position.y, b.max[2] + r * 0.6];
+          p[k] = v;
+          const ball = new THREE.Mesh(new THREE.SphereGeometry(r * 0.75, 20, 12), picked);
+          ball.position.set(...p);
+          const grabEnd = new THREE.Mesh(new THREE.SphereGeometry(r * 2, 12, 8), hitMat);
+          grabEnd.position.set(...p);
+          grabEnd.userData = { end: which, divider: b.id };
+          dividerHolder.add(ball, grabEnd);
+        }
+      }
     }
-    const r = Math.max(3.5, Math.max(d.width, d.depth, d.height) * 0.035);
     const handle = (kind, x, y, z) => {
       const ball = new THREE.Mesh(new THREE.SphereGeometry(r, 24, 16), handleMat);
       ball.position.set(x, y, z);
@@ -182,6 +197,14 @@ export function createView(host, { onDivider, onResize, onSelect }) {
     return hit && group.worldToLocal(hit);
   }
 
+  // The pointer on the top of the walls, measured from the inside front-left corner.
+  function insidePoint() {
+    const local = onPlane(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, design.height));
+    if (!local) return null;
+    const i = inner(design);
+    return { u: local.x + i.w / 2, v: local.y + i.d / 2 };
+  }
+
   let down = null, touches = 0;
   // Registered before OrbitControls so a grab can switch the controls off
   // before they start turning the view.
@@ -191,17 +214,19 @@ export function createView(host, { onDivider, onResize, onSelect }) {
     down = { x: e.clientX, y: e.clientY };
     if (!design) return;
     hitAt(e);
+    // Ends and handles win over the divider they sit on.
     const hits = ray.intersectObjects([...handleHolder.children, ...dividerHolder.children].filter(o => o.userData.handle || o.userData.divider));
-    const hit = hits[0]?.object;
+    const hit = (hits.find(h => h.object.userData.end || h.object.userData.handle) || hits[0])?.object;
     if (!hit) return;
     controls.enabled = false;
     canvas.setPointerCapture(e.pointerId);
-    if (hit.userData.divider) {
+    if (hit.userData.end) {
+      drag = { divider: hit.userData.divider, end: hit.userData.end };
+    } else if (hit.userData.divider) {
       const div = design.dividers.find(x => x.id === hit.userData.divider);
-      const local = onPlane(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, design.height));
-      const i = inner(design);
-      const pos = local ? (div.axis === "x" ? local.x + i.w / 2 : local.y + i.d / 2) : div.at;
-      drag = { divider: div.id, offset: div.at - pos };
+      const [f, e] = ends(design, div), p = insidePoint() || { across: div.at, along: (f + e) / 2 };
+      const { across, along } = div.axis === "x" ? { across: p.u, along: p.v } : { across: p.v, along: p.u };
+      drag = { divider: div.id, offset: [div.at - across, (f + e) / 2 - along] };
       if (selected !== div.id) { selected = div.id; onSelect(div.id); setDesign(design); }
     } else {
       drag = { handle: hit.userData.handle };
@@ -212,12 +237,11 @@ export function createView(host, { onDivider, onResize, onSelect }) {
     if (!drag || !design) return;
     hitAt(e);
     if (drag.divider) {
-      const div = design.dividers.find(x => x.id === drag.divider);
-      if (!div) return;
-      const local = onPlane(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, design.height));
-      if (!local) return;
-      const i = inner(design);
-      onDivider(div.id, (div.axis === "x" ? local.x + i.w / 2 : local.y + i.d / 2) + drag.offset, false);
+      const div = design.dividers.find(x => x.id === drag.divider), p = insidePoint();
+      if (!div || !p) return;
+      const [across, along] = div.axis === "x" ? [p.u, p.v] : [p.v, p.u];
+      if (drag.end) onDividerEnd(div.id, drag.end, along, false);
+      else onDivider(div.id, { at: across + drag.offset[0], mid: along + drag.offset[1] }, false);
     } else if (drag.handle === "width") {
       const local = onPlane(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, design.height / 2));
       if (local) onResize({ width: 2 * (local.x - HANDLE_GAP) }, false);
@@ -240,7 +264,8 @@ export function createView(host, { onDivider, onResize, onSelect }) {
     drag = null;
     controls.enabled = true;
     if (!was || !commit) return;
-    if (was.divider) onDivider(was.divider, null, true);
+    if (was.end) onDividerEnd(was.divider, was.end, null, true);
+    else if (was.divider) onDivider(was.divider, null, true);
     else onResize(null, true);
   }
   const up = e => {
