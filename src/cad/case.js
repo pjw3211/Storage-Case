@@ -66,11 +66,11 @@ export function buildLid(R, d) {
   return plate.fuse(lip);
 }
 
-// The box (or a tray) with slot-in dividers: its walls and floor plus the
-// ribs that make a channel for each divider.
+// The box (or a tray) with slot-in dividers: its walls and floor with a
+// groove cut for each divider.
 export function buildSlotted(R, d) {
   let solid = buildShell(R, d);
-  for (const b of slotLayout(d).rails) solid = solid.fuse(boxSolid(R, b));
+  for (const b of slotLayout(d).grooves) solid = solid.cut(boxSolid(R, b));
   return solid;
 }
 

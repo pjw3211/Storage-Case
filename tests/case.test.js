@@ -1,7 +1,7 @@
 // The exact solids: the box and lid come out the size asked for, dividers
 // join the walls and floor, and the lid's lip fits inside the box.
 import { describe, it, expect, beforeAll } from "vitest";
-import { DEFAULT_DESIGN, normalize, gridDividers, inner, trayPart, boxPart, withPart, stackTop, slotLayout, RAIL } from "../src/design.js";
+import { DEFAULT_DESIGN, normalize, gridDividers, inner, trayPart, boxPart, withPart, stackTop, slotLayout, grooveDepth, cornerInset } from "../src/design.js";
 
 const LAYOUTS = [[1, 1], [2, 1], [2, 2], [3, 2], [4, 3]];
 import { buildCase, buildShell, buildPieces, bounds, dividerBoxes } from "../src/cad/case.js";
@@ -128,51 +128,51 @@ describe("free dividers", () => {
 
 describe("slot-in dividers", () => {
   const slot = (dividers, extra = {}) => normalize({ ...DEFAULT_DESIGN, height: 30, ...extra, dividers });
+  const solidOf = b => R.makeBaseBox(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2])
+    .translate([(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, b.min[2]]);
 
-  it("adds a channel in the box for each divider and prints the dividers flat as their own part", () => {
-    const d = slot([{ id: "a", axis: "x", at: 58.4 }]), parts = buildCase(R, d);
+  it("cuts a groove in the floor and walls for each divider, and prints the dividers flat as their own part", () => {
+    const d = slot([{ id: "a", axis: "x", at: 58.4 }], { floor: 2, wall: 2 }), parts = buildCase(R, d);
     expect(parts.map(p => p.id)).toEqual(["box", "box-dividers"]);
-    const i = inner(d), c = d.clearance, top = d.height;
-    // The box is the shell plus two floor ribs and four wall ribs.
-    const ribs = 2 * RAIL.width * RAIL.height * (i.d + 1) + 4 * RAIL.width * (RAIL.wall + 0.5) * (top - d.floor);
+    const i = inner(d), c = d.clearance, g = grooveDepth(d), W = d.divider + 2 * c;
+    expect(g).toEqual({ floor: 1.4, wall: 1.2 });
+    // Nothing sticks up from the floor: the box is the shell less the grooves.
     const shell = R.measureVolume(buildShell(R, d));
-    expect(R.measureVolume(parts[0].solid) - shell).toBeGreaterThan(ribs * 0.6);
-    expect(R.measureVolume(parts[0].solid) - shell).toBeLessThan(ribs);
+    const cut = W * g.floor * (i.d + 2 * g.wall) + 2 * W * g.wall * (d.height - d.floor);
+    expect(shell - R.measureVolume(parts[0].solid)).toBeCloseTo(cut, 0);
     close(bounds(parts[0].solid).max, [d.width / 2, d.depth / 2, d.height]);
-    // The piece lies flat: as long as the inside less a gap each end, as tall as the inside, one divider thick.
+    // The piece lies flat: reaching into both wall grooves and down into the floor groove.
     const b = bounds(parts[1].solid);
     close(b.min, [0, 0, 0]);
-    close(b.max, [i.d - 2 * c, top - d.floor, d.divider]);
+    close(b.max, [i.d + 2 * g.wall - 2 * c, d.height - d.floor + g.floor, d.divider]);
   });
 
-  it("the channel is wide enough for the divider with a gap each side", () => {
-    const d = slot([{ id: "a", axis: "x", at: 58.4 }]), i = inner(d);
-    const rails = slotLayout(d).rails.filter(r => r.max[2] < d.floor + RAIL.height + 0.1);
-    expect(rails).toHaveLength(2);
-    const gap = rails[1].min[0] - rails[0].max[0];
-    expect(gap).toBeCloseTo(d.divider + 2 * d.clearance, 3);
-    expect((rails[0].max[0] + rails[1].min[0]) / 2).toBeCloseTo(-i.w / 2 + 58.4, 3);
-  });
+  it("the piece fits its grooves with a gap, and never touches the box", () => {
+    const d = slot([{ id: "a", axis: "x", at: 58.4 }, { id: "b", axis: "y", at: 38.4 }], { floor: 2, wall: 2 });
+    const box = buildCase(R, d)[0].solid, i = inner(d);
+    for (const p of slotLayout(d).pieces) {
+      const solid = p.axis === "x"
+        ? solidOf({ min: [-i.w / 2 + p.at - d.divider / 2, -i.d / 2 + p.a, p.z0], max: [-i.w / 2 + p.at + d.divider / 2, -i.d / 2 + p.b, p.z1] })
+        : solidOf({ min: [-i.w / 2 + p.a, -i.d / 2 + p.at - d.divider / 2, p.z0], max: [-i.w / 2 + p.b, -i.d / 2 + p.at + d.divider / 2, p.z1] });
+      expect(R.measureVolume(box.intersect(solid))).toBeCloseTo(0, 2);
+      expect(p.z0).toBeCloseTo(d.floor - grooveDepth(d).floor);
+    }
+  }, 60000);
 
-  it("crossing dividers get halving notches, and their channels leave room for each other", () => {
+  it("crossing dividers get halving notches", () => {
     const d = slot([{ id: "a", axis: "x", at: 58.4 }, { id: "b", axis: "y", at: 38.4 }]);
-    const { pieces, rails } = slotLayout(d);
-    const [a, b] = pieces, mid = d.floor + (d.height - d.floor) / 2;
-    expect(a.notches).toEqual([{ at: 38.4, z0: mid, z1: d.height, w: d.divider + 2 * d.clearance }]);
-    expect(b.notches).toEqual([{ at: 58.4, z0: d.floor, z1: mid, w: d.divider + 2 * d.clearance }]);
-    // No rib runs through where the other divider stands.
-    const i = inner(d), xs = -i.w / 2 + 58.4, ys = -i.d / 2 + 38.4;
-    for (const r of rails) expect(r.min[0] < xs && r.max[0] > xs && r.min[1] < ys && r.max[1] > ys).toBe(false);
-    // Both pieces print in one flat part.
-    const flat = buildPieces(R, d), fb = bounds(flat);
-    expect(fb.max[2]).toBeCloseTo(d.divider, 2);
-    expect(R.measureVolume(flat)).toBeLessThan((a.b - a.a + b.b - b.a) * (d.height - d.floor) * d.divider);
+    const [a, b] = slotLayout(d).pieces, mid = d.floor + (d.height - d.floor) / 2, w = d.divider + 2 * d.clearance;
+    expect(a.notches).toEqual([{ at: 38.4, z0: mid, z1: d.height, w }]);
+    expect(b.notches).toEqual([{ at: 58.4, z0: b.z0, z1: mid, w }]);
+    const flat = buildPieces(R, d);
+    expect(bounds(flat).max[2]).toBeCloseTo(d.divider, 2);
+    expect(R.measureVolume(flat)).toBeLessThan((a.b - a.a + b.b - b.a) * (d.height - a.z0) * d.divider);
   });
 
   it("a divider that ends at another stops a gap short of its face", () => {
     const d = slot([{ id: "a", axis: "x", at: 58.4 }, { id: "b", axis: "y", at: 38.4, from: 0, to: 58.4 }]);
     const b = slotLayout(d).pieces[1];
-    expect(b.a).toBeCloseTo(d.clearance);
+    expect(b.a).toBeCloseTo(d.clearance - grooveDepth(d).wall);
     expect(b.b).toBeCloseTo(58.4 - d.divider / 2 - d.clearance);
     expect(b.notches).toEqual([]);
   });
@@ -188,29 +188,24 @@ describe("slot-in dividers", () => {
 
 describe("rounded corners", () => {
   // A big corner radius, and a slot-in divider close to the left wall, inside the curve.
-  const d = normalize({ ...DEFAULT_DESIGN, height: 30, radius: 20, dividers: [{ id: "a", axis: "x", at: 8 }] });
+  const d = normalize({ ...DEFAULT_DESIGN, height: 30, radius: 20, floor: 2, wall: 2, dividers: [{ id: "a", axis: "x", at: 8 }] });
   const i = inner(d);
 
-  it("a slot-in divider near a corner stops short of the curved wall, and its ribs start on it", () => {
-    const { pieces, rails } = slotLayout(d), p = pieces[0];
-    expect(p.a).toBeGreaterThan(d.clearance + 2);
-    expect(p.b).toBeCloseTo(i.d - p.a, 3);
-    // The piece, stood in place, doesn't touch the box anywhere.
+  it("near a corner the groove and piece start at the curved wall, and the piece doesn't touch the box", () => {
+    const { pieces, grooves } = slotLayout(d), p = pieces[0], W = d.divider + 2 * d.clearance;
+    const k = cornerInset(d, 8 - W / 2, 8 + W / 2, i.w);
+    expect(k).toBeGreaterThan(2);
+    expect(p.a).toBeCloseTo(k - grooveDepth(d).wall + d.clearance);
     const box = buildCase(R, d)[0].solid;
-    const t = d.divider, x0 = -i.w / 2 + p.at;
-    const piece = R.makeBaseBox(t, p.b - p.a, p.z1 - p.z0).translate([x0, -i.d / 2 + (p.a + p.b) / 2, p.z0]);
+    const piece = R.makeBaseBox(d.divider, p.b - p.a, p.z1 - p.z0).translate([-i.w / 2 + p.at, -i.d / 2 + (p.a + p.b) / 2, p.z0]);
     expect(R.measureVolume(box.intersect(piece))).toBeCloseTo(0, 2);
-    // Every rib overlaps the box's walls or floor, so none float.
-    const shell = buildShell(R, d);
-    for (const r of rails) {
-      const rib = R.makeBaseBox(r.max[0] - r.min[0], r.max[1] - r.min[1], r.max[2] - r.min[2])
-        .translate([(r.min[0] + r.max[0]) / 2, (r.min[1] + r.max[1]) / 2, r.min[2]]);
-      expect(R.measureVolume(shell.intersect(rib))).toBeGreaterThan(0.01);
-    }
+    // No groove breaks through the outside of the box.
+    close(bounds(box).min, [-d.width / 2, -d.depth / 2, 0]);
+    expect(R.measureVolume(box)).toBeGreaterThan(R.measureVolume(buildShell(R, d)) - grooves.reduce((n, g) => n + g.max.map((v, j) => v - g.min[j]).reduce((x, y) => x * y), 0) - 1);
   }, 60000);
 
   it("away from the corners nothing changes", () => {
     const mid = normalize({ ...d, dividers: [{ id: "a", axis: "x", at: 58.4 }] });
-    expect(slotLayout(mid).pieces[0].a).toBeCloseTo(d.clearance, 5);
+    expect(slotLayout(mid).pieces[0].a).toBeCloseTo(d.clearance - grooveDepth(d).wall, 5);
   });
 });
