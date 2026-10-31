@@ -100,16 +100,24 @@ export function createView(host, { onSelect, onDivider, onDividerEnd, onTray, on
 
   // Dividers of one part (the box or a tray), in that part's own frame.
   function drawDividers(holder, part, parent, r) {
-    // Slot-in dividers: the ribs that make each one's channel move with it.
-    if (part.dividerStyle !== "fixed") for (const b of slotLayout(part).rails) {
+    // Slot-in dividers: the ribs that make each one's channel move with it,
+    // and each piece only as long as it prints.
+    const slot = part.dividerStyle !== "fixed" && slotLayout(part);
+    if (slot) for (const b of slot.rails) {
       const size = b.max.map((v, k) => v - b.min[k]);
       const rail = new THREE.Mesh(new THREE.BoxGeometry(...size), parent === "box" ? plastic : trayMat);
       rail.position.set(...b.min.map((v, k) => v + size[k] / 2));
       rail.userData.rail = true;
       holder.add(rail);
     }
+    const pi = inner(part);
     for (const b of dividerBoxes(part)) {
       const axis = part.dividers.find(x => x.id === b.id).axis;
+      const piece = slot && slot.pieces.find(p => p.id === b.id);
+      if (piece) {
+        const k = axis === "x" ? 1 : 0, o = axis === "x" ? -pi.d / 2 : -pi.w / 2;
+        b.min[k] = o + piece.a; b.max[k] = o + piece.b;
+      }
       const size = b.max.map((v, k) => v - b.min[k]);
       const z0 = part.floor - 0.01, h = b.max[2] - z0;
       const on = isPicked("divider", b.id);

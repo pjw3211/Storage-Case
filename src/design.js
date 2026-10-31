@@ -127,9 +127,9 @@ export function placeDivider(d, id, at, mid) {
   if (!div) return d;
   const P = span(d, div.axis), S = span(d, other(div.axis)), t = d.divider;
   const [f, e] = ends(d, div), len = e - f;
-  const lines = [P / 2, ...d.dividers.filter(o => o.id !== div.id && o.axis === div.axis).map(o => o.at)];
+  const lines = [P / 2, ...d.dividers.filter(o => o.id !== div.id && o.axis === div.axis).map(o => o.at), ...(d.snapLines?.[div.axis] || [])];
   const line = nearest(at, lines);
-  at = Math.abs(line - at) <= SNAP ? line : Math.round(at);
+  at = Math.abs(line - at) <= SNAP ? round(line) : Math.round(at);
   at = clamp(at, [MIN_POCKET + t / 2, P - MIN_POCKET - t / 2]);
   let from = mid - len / 2;
   const targets = endTargets(d, div, at);
@@ -292,6 +292,18 @@ export function trayZ(d, tray) {
 
 // ---- slot-in dividers -------------------------------------------------------------------
 
+/**
+ * How far the rounded inside corner reaches in from a wall, for something
+ * from `lo` to `hi` across that wall (`S` long inside): 0 away from the
+ * corners, up to the inside radius right at a corner.
+ */
+export function cornerInset(d, lo, hi, S) {
+  const r = Math.max(0, d.radius - d.wall);
+  const u = Math.min(lo, S - hi);
+  if (u >= r) return 0;
+  return r - Math.sqrt(Math.max(0, r * r - (r - Math.max(0, u)) ** 2));
+}
+
 export const RAIL = { width: 1.2, height: 2, wall: 1.5 }; // the ribs that make a channel, mm
 
 /**
@@ -324,8 +336,10 @@ export function slotLayout(d) {
       return across.some(o => meets(o) && Math.abs(o.at - v) < 0.05) ? "divider" : "free";
     };
     const kinds = [endAt(f), endAt(e)];
-    const a = kinds[0] === "wall" ? c : kinds[0] === "divider" ? f + t / 2 + c : f;
-    const b = kinds[1] === "wall" ? S - c : kinds[1] === "divider" ? e - t / 2 - c : e;
+    // Near a corner the rounded wall comes further in, so the piece stops short of that too.
+    const inset = cornerInset(d, x.at - t / 2, x.at + t / 2, P);
+    const a = kinds[0] === "wall" ? c + inset : kinds[0] === "divider" ? f + t / 2 + c : f;
+    const b = kinds[1] === "wall" ? S - c - inset : kinds[1] === "divider" ? e - t / 2 - c : e;
     const z1 = top(x), notches = [];
     for (const o of across) {
       const [o0, o1] = ends(d, o);
@@ -338,21 +352,23 @@ export function slotLayout(d) {
 
     // Floor ribs, broken where another divider crosses or meets this one.
     const cuts = across.filter(meets).map(o => [o.at - t / 2 - c - R - 0.1, o.at + t / 2 + c + R + 0.1]).sort((p, q) => p[0] - q[0]);
-    const runs = [];
-    let from = kinds[0] === "wall" ? -0.5 : a;
-    const to = kinds[1] === "wall" ? S + 0.5 : b;
-    for (const [c0, c1] of cuts) { if (c0 > from) runs.push([from, Math.min(c0, to)]); from = Math.max(from, c1); }
-    if (to > from) runs.push([from, to]);
     const box = (u0, u1, v0, v1, z0, zz) => x.axis === "x"
       ? { min: [-i.w / 2 + u0, -i.d / 2 + v0, z0], max: [-i.w / 2 + u1, -i.d / 2 + v1, zz] }
       : { min: [-i.w / 2 + v0, -i.d / 2 + u0, z0], max: [-i.w / 2 + v1, -i.d / 2 + u1, zz] };
     for (const side of [-1, 1]) {
-      const u = x.at + side * off;
-      if (u - R / 2 < 0 || u + R / 2 > P) continue;
-      for (const [v0, v1] of runs) if (v1 - v0 > 0.5) rails.push(box(u - R / 2, u + R / 2, v0, v1, d.floor - 0.01, d.floor + RAIL.height));
+      const u = x.at + side * off, u0 = u - R / 2, u1 = u + R / 2;
+      if (u0 < 0 || u1 > P) continue;
+      // Start each rib where the wall is, which is further in at a rounded corner.
+      const k = cornerInset(d, u0, u1, P);
+      const runs = [];
+      let from = kinds[0] === "wall" ? k - 0.5 : a;
+      const to = kinds[1] === "wall" ? S - k + 0.5 : b;
+      for (const [c0, c1] of cuts) { if (c0 > from) runs.push([from, Math.min(c0, to)]); from = Math.max(from, c1); }
+      if (to > from) runs.push([from, to]);
+      for (const [v0, v1] of runs) if (v1 - v0 > 0.5) rails.push(box(u0, u1, v0, v1, d.floor - 0.01, d.floor + RAIL.height));
       // Upright ribs on the walls it meets.
-      if (kinds[0] === "wall") rails.push(box(u - R / 2, u + R / 2, -0.5, RAIL.wall, d.floor - 0.01, z1));
-      if (kinds[1] === "wall") rails.push(box(u - R / 2, u + R / 2, S - RAIL.wall, S + 0.5, d.floor - 0.01, z1));
+      if (kinds[0] === "wall") rails.push(box(u0, u1, k - 0.5, k + RAIL.wall, d.floor - 0.01, z1));
+      if (kinds[1] === "wall") rails.push(box(u0, u1, S - k - RAIL.wall, S - k + 0.5, d.floor - 0.01, z1));
     }
   }
   return { pieces, rails };
@@ -370,7 +386,19 @@ export function trayPart(d, tray) {
 
 /** The box itself, with how high its dividers may go below the lid's lip. */
 export function boxPart(d) {
-  return { ...d, dividerTop: stackTop(d) };
+  return { ...d, dividerTop: stackTop(d), snapLines: traySides(d) };
+}
+
+// Where a box divider stands just clear of a tray's side, for each axis: a
+// front-to-back ("x") divider beside a tray's left or right side, a
+// side-to-side ("y") one beside its front or back.
+function traySides(d) {
+  const c = d.clearance, t = d.divider / 2, out = { x: [], y: [] };
+  for (const tr of d.trays || []) {
+    out.x.push(tr.x - c - t, tr.x + tr.w + c + t);
+    out.y.push(tr.y - c - t, tr.y + tr.d + c + t);
+  }
+  return out;
 }
 
 /** A part to lay dividers out in: "box" or a tray's id. */
