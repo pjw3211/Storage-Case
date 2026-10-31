@@ -15,9 +15,9 @@ export const LIMITS = {
   radius: [0, 30], clearance: [0.1, 0.6], lidLip: [2, 15],
 };
 
-export const MAX_TRAYS = 3;
+export const MAX_TRAYS = 12;
 export const TRAY_HEIGHT = [8, 200];
-export const LEDGE = 2.5; // how far the ledge the trays sit on sticks out from the walls, mm
+export const TRAY_MIN = 20; // the narrowest tray, mm
 
 export const MIN_POCKET = 5; // the narrowest pocket the app will make, mm
 
@@ -26,7 +26,9 @@ export const DEFAULT_DESIGN = {
   wall: 1.6, floor: 1.2, divider: 1.2, radius: 4,
   lid: "none", clearance: 0.25, lidLip: 5,
   dividers: [],
-  trays: [], // lift-out trays, bottom first: [{ id, height, dividers }]
+  // Lift-out trays inside the box: [{ id, x, y, w, d, height, dividers }], x and y
+  // being the front-left corner from the inside front-left corner.
+  trays: [],
 };
 
 export const LIDS = [
@@ -34,17 +36,9 @@ export const LIDS = [
   { id: "lift", name: "Lift-off lid", desc: "A flat lid with a lip that sits inside the walls." },
 ];
 
-// Starting layouts. cols × rows of even pockets.
-export const TEMPLATES = [
-  { id: "open", name: "One pocket", cols: 1, rows: 1 },
-  { id: "2x1", name: "2 pockets", cols: 2, rows: 1 },
-  { id: "2x2", name: "2 × 2 grid", cols: 2, rows: 2 },
-  { id: "3x2", name: "3 × 2 grid", cols: 3, rows: 2 },
-  { id: "4x3", name: "4 × 3 grid", cols: 4, rows: 3 },
-];
-
 const clamp = (v, [lo, hi]) => Math.min(hi, Math.max(lo, v));
 const round = (v, step = 0.1) => +(Math.round(v / step) * step).toFixed(2);
+const fine = v => +v.toFixed(2); // trays sit a clearance (0.1 mm steps) from walls, so keep hundredths
 
 /** Inside size of the box, mm. */
 export function inner(d) {
@@ -234,23 +228,38 @@ function normalizeDividers(part, input, previous) {
   return kept;
 }
 
-// Trays fit in the space between the floor and the lid's lip; any that
-// don't fit are made shorter, then dropped.
+// Trays keep their size and place where they can; one too big for the box
+// shrinks to fit, and any with no room left below the lid's lip is dropped.
 function normalizeTrays(d, input, previous) {
+  const i = inner(d), c = d.clearance, minH = Math.max(TRAY_HEIGHT[0], d.floor + 5);
+  const pi = previous && inner(previous);
   const list = (Array.isArray(input) ? input : []).filter(Boolean).slice(0, MAX_TRAYS);
-  const min = Math.max(TRAY_HEIGHT[0], d.floor + 5);
-  let room = stackTop(d) - d.floor;
-  const out = [];
+  let out = [];
   for (const t of list) {
-    const height = Math.min(round(clamp(Number(t.height) || 15, TRAY_HEIGHT), 1), Math.floor(room));
-    if (height < min) break;
-    room -= height;
-    const tray = { id: String(t.id || newId()), height, dividers: [] };
-    const was = previous?.trays?.find(x => x.id === tray.id);
+    const was = previous?.trays?.find(x => x.id === t.id);
+    // Trays saved before they had a size filled the whole inside.
+    let w = Number(t.w) || i.w - 2 * c, dep = Number(t.d) || i.d - 2 * c;
+    let x = t.x != null ? Number(t.x) : c, y = t.y != null ? Number(t.y) : c;
+    if (pi && was && (pi.w !== i.w || pi.d !== i.d)) {
+      // The box changed size: a tray keeps its share of the inside.
+      const kx = (i.w - 2 * c) / (pi.w - 2 * c), ky = (i.d - 2 * c) / (pi.d - 2 * c);
+      x = c + (x - c) * kx; w *= kx; y = c + (y - c) * ky; dep *= ky;
+    }
+    w = fine(clamp(w, [TRAY_MIN, i.w - 2 * c])); dep = fine(clamp(dep, [TRAY_MIN, i.d - 2 * c]));
+    x = fine(clamp(x, [c, i.w - c - w])); y = fine(clamp(y, [c, i.d - c - dep]));
+    const tray = { id: String(t.id || newId()), x, y, w, d: dep, height: round(clamp(Number(t.height) || 20, TRAY_HEIGHT), 1), dividers: [] };
     tray.dividers = normalizeDividers(trayPart(d, tray), t.dividers, was && trayPart(previous, was));
     out.push(tray);
   }
-  return out;
+  // Each tray sits on the floor or on the trays below it, and must end below the lid's lip.
+  const kept = [];
+  for (const t of out) {
+    const z = trayZ({ ...d, trays: kept }, t);
+    const height = Math.min(t.height, Math.floor(stackTop(d) - z));
+    if (height < minH) continue;
+    kept.push({ ...t, height });
+  }
+  return previous ? kept.map(t => ({ ...t, ...lockTray({ ...d, trays: kept }, t, t.x, t.y) })) : kept;
 }
 
 // ---- trays and the lid -----------------------------------------------------------------
@@ -260,45 +269,160 @@ export function stackTop(d) {
   return d.lid === "lift" ? d.height - d.lidLip - 2 * d.clearance : d.height;
 }
 
-/** Where the bottom tray sits: the top of the ledge round the inside walls. */
-export function ledgeTop(d) {
-  return stackTop(d) - (d.trays || []).reduce((a, t) => a + t.height, 0);
+const footprintsOverlap = (a, b) => a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.d - 0.5 && b.y < a.y + a.d - 0.5;
+
+/** How high a tray's bottom sits: on the floor, or on top of the trays listed before it that it overlaps. */
+export function trayZ(d, tray) {
+  let z = d.floor;
+  for (const o of d.trays || []) {
+    if (o.id === tray.id) break;
+    if (footprintsOverlap(o, tray)) z = Math.max(z, trayZ(d, o) + o.height);
+  }
+  return z;
 }
 
 /** A tray as a box of its own, so the same divider tools work on it. */
 export function trayPart(d, tray) {
-  const i = inner(d), c = d.clearance;
   return {
-    width: i.w - 2 * c, depth: i.d - 2 * c, height: tray.height,
-    wall: d.wall, floor: d.floor, divider: d.divider, radius: Math.max(0, d.radius - d.wall - c),
+    width: tray.w, depth: tray.d, height: tray.height,
+    wall: d.wall, floor: d.floor, divider: d.divider,
+    radius: Math.max(0, Math.min(d.radius - d.wall - d.clearance, Math.min(tray.w, tray.d) / 2 - 0.5)),
     lid: "none", dividers: tray.dividers || [], dividerTop: tray.height,
   };
 }
 
-/** The box itself, with how high its dividers may go below the trays and the lid. */
+/** The box itself, with how high its dividers may go below the lid's lip. */
 export function boxPart(d) {
-  return { ...d, dividerTop: (d.trays || []).length ? ledgeTop(d) : stackTop(d) };
+  return { ...d, dividerTop: stackTop(d) };
 }
 
-/** The part being edited: "box" or a tray's id. */
+/** A part to lay dividers out in: "box" or a tray's id. */
 export function partOf(d, target) {
   const tray = target !== "box" && (d.trays || []).find(t => t.id === target);
   return tray ? trayPart(d, tray) : boxPart(d);
 }
 
-/** Write an edited part's dividers (and a tray's height) back into the design. */
+/** Write a part's dividers back into the design. */
 export function withPart(d, target, part) {
   if (target === "box") return { ...d, dividers: part.dividers };
-  return { ...d, trays: d.trays.map(t => t.id === target ? { ...t, dividers: part.dividers, height: part.height } : t) };
+  return { ...d, trays: d.trays.map(t => t.id === target ? { ...t, dividers: part.dividers } : t) };
 }
 
-/** Add a tray on top of the stack, or null if there is no room. */
+// Where a tray's near edge can go along one axis: against a wall or against
+// another tray (both touch), or lined up with another tray's edge (no touch).
+function trayStops(d, tray, axis) {
+  const i = inner(d), c = d.clearance, S = axis === "x" ? i.w : i.d;
+  const pos = axis === "x" ? "x" : "y", size = axis === "x" ? "w" : "d";
+  const out = [{ v: c, touch: 1 }, { v: S - c - tray[size], touch: 1 }];
+  for (const o of d.trays || []) {
+    if (o.id === tray.id) continue;
+    out.push({ v: o[pos] + o[size] + c, touch: 1, tray: o }, { v: o[pos] - c - tray[size], touch: 1, tray: o },
+      { v: o[pos], touch: 0 }, { v: o[pos] + o[size] - tray[size], touch: 0 });
+  }
+  return out.filter(s => s.v >= c - 0.01 && s.v <= S - c - tray[size] + 0.01);
+}
+
+// How many sides a tray at (x, y) touches: walls, and trays beside it that
+// it really meets (their sides overlap).
+export function trayTouches(d, tray, x = tray.x, y = tray.y) {
+  const at = { ...tray, x, y };
+  let n = 0;
+  for (const axis of ["x", "y"]) for (const s of trayStops(d, at, axis)) {
+    if (!s.touch || Math.abs(s.v - at[axis]) > 0.05) continue;
+    if (s.tray) {
+      const [p, q] = axis === "x" ? ["y", "d"] : ["x", "w"];
+      if (!(at[p] < s.tray[p] + s.tray[q] - 0.5 && s.tray[p] < at[p] + at[q] - 0.5)) continue;
+    }
+    n++;
+  }
+  return n;
+}
+
+// The nearest place to (x, y) where the tray touches at least two sides.
+function lockTray(d, tray, x, y) {
+  const xs = [{ v: x, touch: 0 }, ...trayStops(d, tray, "x")], ys = [{ v: y, touch: 0 }, ...trayStops(d, tray, "y")];
+  let best = null;
+  for (const a of xs) for (const b of ys) {
+    const touches = trayTouches(d, tray, a.v, b.v);
+    if (touches < 2) continue;
+    const dist = Math.hypot(a.v - x, b.v - y);
+    if (!best || dist < best.dist - 1e-6) best = { dist, x: fine(a.v), y: fine(b.v) };
+  }
+  return best ? { x: best.x, y: best.y } : { x: d.clearance, y: d.clearance };
+}
+
+/**
+ * Drag a tray to (x, y), its front-left corner measured from the inside
+ * front-left corner. While dragging it snaps to walls and trays it comes
+ * near; when dropped (`lock`) it moves to the nearest place where it touches
+ * at least two sides. Dropped onto another tray, it stacks on top.
+ */
+export function placeTray(d, id, x, y, lock = false) {
+  const tray = d.trays.find(t => t.id === id);
+  if (!tray) return d;
+  const i = inner(d), c = d.clearance;
+  x = clamp(x, [c, i.w - c - tray.w]); y = clamp(y, [c, i.d - c - tray.d]);
+  let place;
+  if (lock) place = lockTray(d, tray, x, y);
+  else {
+    const snap = (v, axis) => { const n = trayStops(d, tray, axis).reduce((b, s) => Math.abs(s.v - v) < Math.abs(b - v) ? s.v : b, Infinity); return Math.abs(n - v) <= 2 * SNAP ? n : Math.round(v); };
+    place = { x: fine(snap(x, "x")), y: fine(snap(y, "y")) };
+  }
+  const moved = { ...tray, ...place };
+  // A tray dropped over another goes to the top of that stack.
+  const rest = d.trays.filter(t => t.id !== id);
+  const trays = lock && rest.some(o => footprintsOverlap(o, moved)) ? [...rest, moved] : d.trays.map(t => t.id === id ? moved : t);
+  return { ...d, trays };
+}
+
+/** Change a tray's width, depth or height; it stays against the walls it was touching. */
+export function resizeTray(d, id, change) {
+  const tray = d.trays.find(t => t.id === id);
+  if (!tray) return d;
+  const i = inner(d), c = d.clearance;
+  const next = { ...tray, ...change };
+  // Against the right or back wall (and not the left or front), grow towards the middle.
+  if (change.w != null && Math.abs(tray.x + tray.w - (i.w - c)) < 0.05 && Math.abs(tray.x - c) > 0.05) next.x = i.w - c - next.w;
+  if (change.d != null && Math.abs(tray.y + tray.d - (i.d - c)) < 0.05 && Math.abs(tray.y - c) > 0.05) next.y = i.d - c - next.d;
+  return { ...d, trays: d.trays.map(t => t.id === id ? next : t) };
+}
+
+/** Make a tray fill the inside from wall to wall across one axis ("x" or "y"). */
+export function fillTray(d, id, axis) {
+  const i = inner(d), c = d.clearance;
+  return resizeTray(d, id, axis === "x" ? { x: c, w: i.w - 2 * c } : { y: c, d: i.d - 2 * c });
+}
+
+/** Add a tray half the inside's width, in the first free corner (or on top of the others), or null if there is no room. */
 export function addTray(d) {
   if ((d.trays || []).length >= MAX_TRAYS) return null;
-  const room = ledgeTop(d) - d.floor, min = Math.max(TRAY_HEIGHT[0], d.floor + 5);
-  if (room < min) return null;
-  const tray = { id: newId(), height: Math.max(min, Math.min(20, Math.floor(room / 2))), dividers: [] };
+  const i = inner(d), c = d.clearance;
+  const tray = { id: newId(), x: c, y: c, w: fine(Math.max(TRAY_MIN, (i.w - 3 * c) / 2)), d: fine(i.d - 2 * c), height: 20, dividers: [] };
+  const spots = [[c, c], [i.w - c - tray.w, c], [c, i.d - c - tray.d], [i.w - c - tray.w, i.d - c - tray.d]];
+  const free = spots.find(([x, y]) => !(d.trays || []).some(o => footprintsOverlap(o, { ...tray, x, y })));
+  if (free) [tray.x, tray.y] = free.map(fine);
+  const z = trayZ({ ...d, trays: [...(d.trays || []), tray] }, tray);
+  tray.height = Math.min(20, Math.floor(stackTop(d) - z));
+  if (tray.height < Math.max(TRAY_HEIGHT[0], d.floor + 5)) return null;
   return { design: { ...d, trays: [...(d.trays || []), tray] }, id: tray.id };
+}
+
+/** Things that will clash when printed and put together, in plain words. */
+export function problems(d) {
+  const out = [], t = d.divider, i = inner(d);
+  d.trays.forEach((tray, k) => {
+    const z = trayZ(d, tray);
+    if (z > d.floor + 0.01) return;
+    for (const x of d.dividers) {
+      const [f, e] = ends(d, x), top = x.height != null ? d.floor + x.height : d.height;
+      const r = x.axis === "x" ? { x: x.at - t / 2, w: t, y: f, d: e - f } : { x: f, w: e - f, y: x.at - t / 2, d: t };
+      if (top > z && footprintsOverlap(tray, { ...r, x: r.x - 0.5, y: r.y - 0.5, w: r.w + 1, d: r.d + 1 })) {
+        out.push(`Tray ${k + 1} sits on a box divider. Move one of them.`);
+        break;
+      }
+    }
+  });
+  return out;
 }
 
 /**
