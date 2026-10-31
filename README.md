@@ -9,7 +9,7 @@ Design a 3D-printable storage case on your phone, without CAD. Set the size, pic
 ## What it does now
 
 1. **Size.** Type the width, depth and height, or drag the round orange handles on the box.
-2. **Inside.** Pick a layout (one pocket up to a 4 × 3 grid), add dividers either way, and drag any divider to move it. Tap a divider to set its exact position, lower it for finger access, or delete it.
+2. **Inside.** Every divider is a separate piece. Start from a layout (one pocket up to a 4 × 3 grid) if you like, then drag any divider anywhere: it lines up with other dividers, and its ends snap to the walls and to dividers they meet. Tap a divider to drag its end dots (longer or shorter), turn it 90°, stretch it wall to wall, lower it for finger access, or delete it.
 3. **Walls.** Sliders for wall, floor and divider thickness and corner radius.
 4. **Trays.** Add up to three lift-out trays that stack inside the box, each with its own height and dividers. Tap Box or Tray 1, 2, 3 to choose which one you're laying out. The bottom tray sits on a ledge round the inside walls, and the box's own dividers stop below the trays.
 5. **Lid.** None, or a lift-off lid with a lip that sits inside the walls; dividers and trays stop below the lip. The lid and trays show beside the box, the way up they print.

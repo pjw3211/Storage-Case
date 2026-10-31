@@ -121,3 +121,18 @@ describe("trays", () => {
     expect(R.measureVolume(box.intersect(lipZone))).toBeCloseTo(0, 1);
   });
 });
+
+describe("free dividers", () => {
+  it("a short divider is only as long as asked, and joins the wall it touches", () => {
+    let d = design();
+    d = normalize({ ...d, dividers: [{ id: "a", axis: "x", at: 50, from: 0, to: 30 }] });
+    const box = buildCase(R, d)[0].solid, i = inner(d);
+    const shell = R.measureVolume(buildShell(R, d));
+    expect(R.measureVolume(box) - shell).toBeCloseTo(d.divider * 30 * i.h, -1);
+    // One solid: the divider is joined to the front wall, not floating.
+    expect(box.faces.length).toBeGreaterThan(10);
+    const b = dividerBoxes(boxPart(d))[0];
+    expect(b.min[1]).toBeCloseTo(-i.d / 2);
+    expect(b.max[1]).toBeCloseTo(-i.d / 2 + 30);
+  });
+});

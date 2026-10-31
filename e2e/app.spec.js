@@ -165,3 +165,33 @@ test("add two trays, lay out the first, and download every part", async ({ page 
   expect(downloads.map(x => x.suggestedFilename()).sort()).toEqual([
     "storage-case-120x80x60-box.stl", "storage-case-120x80x60-tray-1.stl", "storage-case-120x80x60-tray-2.stl"]);
 });
+
+test("shorten a divider by dragging its end, and it snaps to the divider it meets", async ({ page }) => {
+  await waitForBuild(page, 0);
+  const d = await design(page);
+  const div = d.dividers.find(x => x.axis === "x"), across = d.dividers.find(x => x.axis === "y");
+  // Tap the divider to pick it, which shows its end dots.
+  const mid = await dividerPoint(page, div.id);
+  await page.mouse.click(mid.x, mid.y);
+  await expect(page.locator("#sel-turn")).toBeVisible();
+  // Drag its back end to just past the side-to-side divider.
+  const pt = v => page.evaluate(([at, v]) => {
+    const d = window.__app.design, iw = d.width - 2 * d.wall, id = d.depth - 2 * d.wall;
+    return window.__app.view.screenPoint([-iw / 2 + at, -id / 2 + v, d.height]);
+  }, [div.at, v]);
+  const from = await pt(div.to + 1), to = await pt(across.at + 2);
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  for (let k = 1; k <= 8; k++) await page.mouse.move(from.x + (to.x - from.x) * k / 8, from.y + (to.y - from.y) * k / 8);
+  await page.mouse.up();
+  const after = (await design(page)).dividers.find(x => x.id === div.id);
+  expect(after.to).toBeCloseTo(across.at, 1);
+  // The back left and back middle pockets are now one.
+  await expect(page.locator("#summary")).toHaveText("120 × 80 × 40 mm, 5 pockets");
+
+  // Turn it a quarter turn, then delete it.
+  await page.locator("#sel-turn").click();
+  expect((await design(page)).dividers.find(x => x.id === div.id).axis).toBe("y");
+  await page.locator("#sel-delete").click();
+  await expect(page.locator("#summary")).toHaveText("120 × 80 × 40 mm, 4 pockets");
+});

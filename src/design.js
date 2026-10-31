@@ -57,36 +57,118 @@ const span = (d, axis) => axis === "x" ? inner(d).w : inner(d).d;
 let nextId = 1;
 export const newId = () => "d" + (nextId++).toString(36) + Math.random().toString(36).slice(2, 6);
 
-/** Even dividers for a cols × rows grid. "x" dividers stand across the width. */
+const other = axis => axis === "x" ? "y" : "x";
+export const SNAP = 4; // mm: how close an end or edge must come before it snaps
+const MIN_LENGTH = 5;  // the shortest divider, mm
+
+/**
+ * Dividers are separate pieces. Each stands across one axis: an "x" divider
+ * sits at x = `at` (from the inside left wall) and runs front to back from
+ * `from` to `to` (measured from the inside front wall); a "y" divider sits at
+ * y = `at` and runs left to right. Without `from`/`to` it runs wall to wall.
+ */
+export function ends(d, div) {
+  return [div.from ?? 0, div.to ?? span(d, other(div.axis))];
+}
+const overlap = (d, a, b) => { const [a0, a1] = ends(d, a), [b0, b1] = ends(d, b); return a0 < b1 - 0.01 && b0 < a1 - 0.01; };
+
+/** Even dividers for a cols × rows grid, each running wall to wall. */
 export function gridDividers(d, cols, rows) {
   const out = [], iw = span(d, "x"), id = span(d, "y");
-  for (let i = 1; i < cols; i++) out.push({ id: newId(), axis: "x", at: round(iw * i / cols) });
-  for (let j = 1; j < rows; j++) out.push({ id: newId(), axis: "y", at: round(id * j / rows) });
+  for (let i = 1; i < cols; i++) out.push({ id: newId(), axis: "x", at: round(iw * i / cols), from: 0, to: id });
+  for (let j = 1; j < rows; j++) out.push({ id: newId(), axis: "y", at: round(id * j / rows), from: 0, to: iw });
   return out;
 }
 
-/** The smallest and largest place a divider can move to without squashing a pocket. */
+/** The smallest and largest place a divider can slide to without squashing a pocket beside it. */
 export function dividerRange(d, div) {
   const s = span(d, div.axis), gap = MIN_POCKET + d.divider / 2;
   let lo = gap, hi = s - gap;
   for (const o of d.dividers) {
-    if (o.id === div.id || o.axis !== div.axis) continue;
+    if (o.id === div.id || o.axis !== div.axis || !overlap(d, o, div)) continue;
     if (o.at <= div.at) lo = Math.max(lo, o.at + d.divider + MIN_POCKET);
     else hi = Math.min(hi, o.at - d.divider - MIN_POCKET);
   }
   return [lo, hi];
 }
 
-/** Move a divider, snapped to 1 mm and kept between its neighbours. */
+const update = (d, id, change) => ({ ...d, dividers: d.dividers.map(x => x.id === id ? { ...x, ...change } : x) });
+
+/** Slide a divider sideways, snapped to 1 mm and kept between its neighbours (the position slider). */
 export function moveDivider(d, id, at) {
   const div = d.dividers.find(x => x.id === id);
   if (!div) return d;
   const [lo, hi] = dividerRange(d, div);
-  const next = lo > hi ? div.at : clamp(Math.round(at), [Math.ceil(lo), Math.floor(hi)]);
-  return { ...d, dividers: d.dividers.map(x => x.id === id ? { ...x, at: next } : x) };
+  return update(d, id, { at: lo > hi ? div.at : clamp(Math.round(at), [Math.ceil(lo), Math.floor(hi)]) });
 }
 
-/** Add a divider in the middle of the widest pocket along that axis, or null if there is no room. */
+// The places a divider's end can snap to: the walls, and the middle of any
+// divider standing across its path.
+function endTargets(d, div, at) {
+  const out = [0, span(d, other(div.axis))];
+  for (const o of d.dividers) {
+    if (o.id === div.id || o.axis === div.axis) continue;
+    const [o0, o1] = ends(d, o);
+    if (at >= o0 - d.divider && at <= o1 + d.divider) out.push(o.at);
+  }
+  return out;
+}
+const nearest = (v, targets) => targets.reduce((best, t) => Math.abs(t - v) < Math.abs(best - v) ? t : best, Infinity);
+
+/**
+ * Drag a divider anywhere: `at` across it, `mid` the middle of its length.
+ * It snaps in line with other dividers, to the middle of the box, and its
+ * ends snap to the walls and to dividers they reach.
+ */
+export function placeDivider(d, id, at, mid) {
+  const div = d.dividers.find(x => x.id === id);
+  if (!div) return d;
+  const P = span(d, div.axis), S = span(d, other(div.axis)), t = d.divider;
+  const [f, e] = ends(d, div), len = e - f;
+  const lines = [P / 2, ...d.dividers.filter(o => o.id !== div.id && o.axis === div.axis).map(o => o.at)];
+  const line = nearest(at, lines);
+  at = Math.abs(line - at) <= SNAP ? line : Math.round(at);
+  at = clamp(at, [MIN_POCKET + t / 2, P - MIN_POCKET - t / 2]);
+  let from = mid - len / 2;
+  const targets = endTargets(d, div, at);
+  const a = nearest(from, targets), b = nearest(from + len, targets);
+  if (Math.abs(a - from) <= SNAP && Math.abs(a - from) <= Math.abs(b - from - len)) from = a;
+  else if (Math.abs(b - from - len) <= SNAP) from = b - len;
+  else from = Math.round(from);
+  from = clamp(from, [0, S - len]);
+  return update(d, id, { at, from: round(from), to: round(from + len) });
+}
+
+/** Drag one end of a divider ("from" or "to") to make it longer or shorter; it snaps to walls and dividers. */
+export function setDividerEnd(d, id, which, value) {
+  const div = d.dividers.find(x => x.id === id);
+  if (!div) return d;
+  const S = span(d, other(div.axis)), [f, e] = ends(d, div);
+  const n = nearest(value, endTargets(d, div, div.at));
+  let v = Math.abs(n - value) <= SNAP ? n : Math.round(value);
+  v = which === "from" ? clamp(v, [0, e - MIN_LENGTH]) : clamp(v, [f + MIN_LENGTH, S]);
+  return update(d, id, { [which]: round(v) });
+}
+
+/** Turn a divider a quarter turn about its middle. */
+export function turnDivider(d, id) {
+  const div = d.dividers.find(x => x.id === id);
+  if (!div) return d;
+  const axis = other(div.axis), [f, e] = ends(d, div);
+  const P = span(d, axis), S = span(d, div.axis), t = d.divider;
+  const len = Math.min(e - f, S);
+  const at = clamp((f + e) / 2, [MIN_POCKET + t / 2, P - MIN_POCKET - t / 2]);
+  const from = clamp(div.at - len / 2, [0, S - len]);
+  return update(d, id, { axis, at: round(at), from: round(from), to: round(from + len) });
+}
+
+/** Stretch a divider from wall to wall. */
+export function fullLength(d, id) {
+  const div = d.dividers.find(x => x.id === id);
+  return div ? update(d, id, { from: 0, to: span(d, other(div.axis)) }) : d;
+}
+
+/** Add a wall-to-wall divider in the middle of the widest gap along that axis, or null if there is no room. */
 export function addDivider(d, axis) {
   const s = span(d, axis), ats = d.dividers.filter(x => x.axis === axis).map(x => x.at).sort((a, b) => a - b);
   const edges = [-d.divider / 2, ...ats, s + d.divider / 2];
@@ -96,7 +178,7 @@ export function addDivider(d, axis) {
     if (!best || room > best.room) best = { room, at: (edges[i] + edges[i + 1]) / 2 };
   }
   if (!best || best.room < 2 * MIN_POCKET + d.divider) return null;
-  const div = { id: newId(), axis, at: Math.round(best.at) };
+  const div = { id: newId(), axis, at: Math.round(best.at), from: 0, to: span(d, other(axis)) };
   return { design: { ...d, dividers: [...d.dividers, div] }, id: div.id };
 }
 
@@ -124,24 +206,30 @@ export function normalize(input, previous) {
 // that no longer fit. `part` is the box or a tray (see trayPart).
 function normalizeDividers(part, input, previous) {
   let divs = Array.isArray(input) ? input.filter(x => x && (x.axis === "x" || x.axis === "y")) : [];
-  if (previous) {
-    const was = { x: span(previous, "x"), y: span(previous, "y") }, now = { x: span(part, "x"), y: span(part, "y") };
-    divs = divs.map(x => was[x.axis] !== now[x.axis] ? { ...x, at: x.at * now[x.axis] / was[x.axis] } : x);
-  }
-  divs = divs.map(x => ({
-    id: String(x.id || newId()), axis: x.axis, at: Number(x.at) || 0,
-    ...(x.height != null ? { height: clamp(Number(x.height), [3, inner(part).h]) } : {}),
-  }));
+  const was = previous && { x: span(previous, "x"), y: span(previous, "y") }, now = { x: span(part, "x"), y: span(part, "y") };
+  divs = divs.map(x => {
+    const along = other(x.axis), S = now[along], t = part.divider;
+    // Resizing keeps each divider in the same place as a share of the inside.
+    const k = was ? now[x.axis] / was[x.axis] : 1, kl = was ? S / was[along] : 1;
+    const at = (Number(x.at) || 0) * k;
+    let from = x.from != null ? Number(x.from) * kl : 0, to = x.to != null ? Number(x.to) * kl : S;
+    // A divider that ran wall to wall still does.
+    if (was && x.to != null && Math.abs(Number(x.to) - was[along]) < 0.05) to = S;
+    from = clamp(from, [0, Math.max(0, S - MIN_LENGTH)]);
+    to = clamp(to, [Math.min(S, from + MIN_LENGTH), S]);
+    return {
+      id: String(x.id || newId()), axis: x.axis, at: round(at), from: round(from), to: round(to),
+      ...(x.height != null ? { height: clamp(Number(x.height), [3, inner(part).h]) } : {}),
+      fits: at >= MIN_POCKET + t / 2 - 0.05 && at <= now[x.axis] - MIN_POCKET - t / 2 + 0.05,
+    };
+  });
+  // Drop dividers that no longer fit, and any sitting on top of another.
   const kept = [];
-  for (const axis of ["x", "y"]) {
-    const s = span(part, axis);
-    let last = -Infinity;
-    for (const x of divs.filter(x => x.axis === axis).sort((a, b) => a.at - b.at)) {
-      const at = Math.max(x.at, MIN_POCKET + part.divider / 2, last + part.divider + MIN_POCKET);
-      if (at > s - MIN_POCKET - part.divider / 2) continue;
-      kept.push({ ...x, at: Math.round(at * 10) / 10 });
-      last = at;
-    }
+  for (const x of divs) {
+    if (!x.fits) continue;
+    delete x.fits;
+    if (kept.some(o => o.axis === x.axis && Math.abs(o.at - x.at) < part.divider + MIN_POCKET && overlap(part, o, x))) continue;
+    kept.push(x);
   }
   return kept;
 }
@@ -213,18 +301,42 @@ export function addTray(d) {
   return { design: { ...d, trays: [...(d.trays || []), tray] }, id: tray.id };
 }
 
-/** The pockets as rectangles inside the box, for labels and fit checks. */
+/**
+ * The pockets: the separate spaces the dividers make, found on a 1 mm grid.
+ * Each comes back with its size, for labels and fit checks.
+ */
 export function pockets(d) {
   const { w, d: dep } = inner(d), t = d.divider;
-  const cuts = (axis, s) => {
-    const ats = d.dividers.filter(x => x.axis === axis).map(x => x.at).sort((a, b) => a - b);
-    const edges = [0, ...ats.flatMap(a => [a - t / 2, a + t / 2]), s];
-    const out = [];
-    for (let i = 0; i < edges.length; i += 2) out.push([edges[i], edges[i + 1]]);
-    return out;
-  };
-  const out = [];
-  for (const [x0, x1] of cuts("x", w)) for (const [y0, y1] of cuts("y", dep)) out.push({ x0, x1, y0, y1, w: x1 - x0, d: y1 - y0 });
+  const nx = Math.max(1, Math.round(w)), ny = Math.max(1, Math.round(dep)), sx = w / nx, sy = dep / ny;
+  const blocked = new Uint8Array(nx * ny);
+  for (const x of d.dividers) {
+    const [f, e] = ends(d, x);
+    // At least one cell thick, so a thin divider still splits the grid.
+    const hu = Math.max(t, sx) / 2, hv = Math.max(t, sy) / 2;
+    const [u0, u1, v0, v1] = x.axis === "x" ? [x.at - hu, x.at + hu, f, e] : [f, e, x.at - hv, x.at + hv];
+    for (let j = 0; j < ny; j++) {
+      const cy = (j + 0.5) * sy;
+      if (cy < v0 || cy > v1) continue;
+      for (let i = 0; i < nx; i++) { const cx = (i + 0.5) * sx; if (cx >= u0 && cx <= u1) blocked[j * nx + i] = 1; }
+    }
+  }
+  const seen = new Uint8Array(nx * ny), out = [];
+  for (let s0 = 0; s0 < nx * ny; s0++) {
+    if (blocked[s0] || seen[s0]) continue;
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, area = 0;
+    const stack = [s0]; seen[s0] = 1;
+    while (stack.length) {
+      const c = stack.pop(), i = c % nx, j = (c - i) / nx;
+      area++; x0 = Math.min(x0, i); x1 = Math.max(x1, i); y0 = Math.min(y0, j); y1 = Math.max(y1, j);
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const a = i + di, b = j + dj, n = b * nx + a;
+        if (a < 0 || b < 0 || a >= nx || b >= ny || blocked[n] || seen[n]) continue;
+        seen[n] = 1; stack.push(n);
+      }
+    }
+    if (area < 4) continue; // a sliver, not a pocket
+    out.push({ x0: x0 * sx, x1: (x1 + 1) * sx, y0: y0 * sy, y1: (y1 + 1) * sy, w: (x1 - x0 + 1) * sx, d: (y1 - y0 + 1) * sy, area: area * sx * sy });
+  }
   return out;
 }
 

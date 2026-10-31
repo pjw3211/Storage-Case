@@ -4,7 +4,7 @@
 //
 // CAD frame: millimetres, Z up, X across the width, front faces -Y. The box
 // is centred on X = Y = 0 with its floor on Z = 0.
-import { inner, boxPart, trayPart, ledgeTop, LEDGE } from "../design.js";
+import { inner, ends, boxPart, trayPart, ledgeTop, LEDGE } from "../design.js";
 
 // A rounded rectangle centred on the origin, extruded up from z0.
 function slab(R, w, d, r, z0, h) {
@@ -41,9 +41,12 @@ export function dividerBoxes(d) {
   const i = inner(d), t = d.divider, cap = d.dividerTop ?? d.height;
   return d.dividers.map(x => {
     const top = Math.min(cap, x.height != null ? d.floor + x.height : d.height);
+    const [f, e] = ends(d, x), S = x.axis === "x" ? i.d : i.w;
+    // Ends at a wall run slightly into it so nothing is left floating.
+    const a = f < 0.05 ? -0.5 : 0, b = e > S - 0.05 ? 0.5 : 0;
     return x.axis === "x"
-      ? { id: x.id, min: [-i.w / 2 + x.at - t / 2, -i.d / 2, 0], max: [-i.w / 2 + x.at + t / 2, i.d / 2, top] }
-      : { id: x.id, min: [-i.w / 2, -i.d / 2 + x.at - t / 2, 0], max: [i.w / 2, -i.d / 2 + x.at + t / 2, top] };
+      ? { id: x.id, min: [-i.w / 2 + x.at - t / 2, -i.d / 2 + f, 0], max: [-i.w / 2 + x.at + t / 2, -i.d / 2 + e, top], grow: [a, b] }
+      : { id: x.id, min: [-i.w / 2 + f, -i.d / 2 + x.at - t / 2, 0], max: [-i.w / 2 + e, -i.d / 2 + x.at + t / 2, top], grow: [a, b] };
   });
 }
 
@@ -54,10 +57,11 @@ const boxSolid = (R, b) => R.makeBaseBox(b.max[0] - b.min[0], b.max[1] - b.min[1
 // dividers, so each divider joins the walls and floor cleanly.
 export function buildBox(R, d) {
   let space = cavity(R, d);
-  for (const b of dividerBoxes(d)) {
-    // Dividers run slightly into the walls so nothing is left floating.
-    const grow = b.max[0] - b.min[0] > b.max[1] - b.min[1] ? [[-0.5, 0, 0], [0.5, 0, 0]] : [[0, -0.5, 0], [0, 0.5, 0]];
-    space = space.cut(boxSolid(R, { min: b.min.map((v, k) => v + grow[0][k]), max: b.max.map((v, k) => v + grow[1][k]) }));
+  for (const x of d.dividers) {
+    const b = dividerBoxes({ ...d, dividers: [x] })[0], k = x.axis === "x" ? 1 : 0;
+    const min = [...b.min], max = [...b.max];
+    min[k] += b.grow[0]; max[k] += b.grow[1];
+    space = space.cut(boxSolid(R, { min, max }));
   }
   return slab(R, d.width, d.depth, d.radius, 0, d.height).cut(space);
 }

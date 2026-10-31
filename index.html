@@ -40,6 +40,7 @@
     background: #fff; color: var(--muted); cursor: pointer; }
   .targets button[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
   #tray-controls { margin-bottom: 10px; }
+  .sub { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
   .tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
   .tiles.two { grid-template-columns: repeat(2, 1fr); }
   .tile { border: 1.5px solid var(--line); background: #fff; border-radius: 10px; padding: 4px 3px 6px; cursor: pointer;
@@ -104,7 +105,7 @@
   </div>
   <aside>
     <div id="summary"></div>
-    <p class="hint">Drag a divider to move it, or drag the round handles to resize the box. Drag anywhere else to turn the view, and pinch to zoom.</p>
+    <p class="hint">Drag a divider anywhere: its ends snap to the walls and to other dividers. Tap one to shorten, turn or delete it. Drag the round handles to resize the box, anywhere else to turn the view, and pinch to zoom.</p>
 
     <details data-group="size" open>
       <summary><h3>Size</h3></summary>
@@ -115,6 +116,7 @@
       <summary><h3>Inside</h3></summary>
       <div class="targets" id="targets" role="group" aria-label="Lay out"></div>
       <div id="tray-controls" hidden></div>
+      <div class="sub">Start from a layout, then move anything</div>
       <div class="tiles" id="templates" role="radiogroup" aria-label="Layout"></div>
       <div class="row">
         <button class="btn" id="add-x" type="button">+ Front-to-back divider</button>

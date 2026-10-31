@@ -2,7 +2,7 @@
 // for a pocket either side, and resizing keeps a grid even.
 import { describe, it, expect } from "vitest";
 import { DEFAULT_DESIGN, LIMITS, MIN_POCKET, normalize, gridDividers, moveDivider, addDivider, pockets, inner, summary,
-  stackTop, ledgeTop, boxPart, trayPart, partOf, withPart, addTray } from "../src/design.js";
+  stackTop, ledgeTop, boxPart, trayPart, partOf, withPart, addTray, ends, placeDivider, setDividerEnd, turnDivider, fullLength } from "../src/design.js";
 
 const base = (extra = {}) => normalize({ ...DEFAULT_DESIGN, ...extra });
 
@@ -104,5 +104,66 @@ describe("lid and trays", () => {
     expect(pockets(partOf(d, "a"))).toHaveLength(4);
     expect(d.dividers).toHaveLength(0);
     expect(summary(d)).toBe("120 × 80 × 40 mm, 1 pocket, 1 tray");
+  });
+});
+
+describe("free dividers", () => {
+  // 120 × 80 box, 1.6 mm walls: 116.8 × 76.8 inside.
+  const one = (div) => normalize({ ...base(), dividers: [{ id: "a", ...div }] });
+
+  it("grid dividers run wall to wall", () => {
+    const d = base(), [x] = gridDividers(d, 2, 1);
+    expect(ends(d, x)).toEqual([0, 76.8]);
+  });
+
+  it("drags anywhere, and an end snaps to a wall when it comes close", () => {
+    let d = one({ axis: "x", at: 30, from: 20, to: 50 });
+    d = placeDivider(d, "a", 70.4, 17.5); // 30 long, so its front end would be at 2.5 mm
+    expect(d.dividers[0]).toMatchObject({ at: 70, from: 0, to: 30 });
+    d = placeDivider(d, "a", 70, 40);      // nothing near: whole millimetres
+    expect(d.dividers[0]).toMatchObject({ from: 25, to: 55 });
+  });
+
+  it("an end snaps to a divider it reaches, and lines up with parallel ones", () => {
+    let d = normalize({ ...base(), dividers: [
+      { id: "wall", axis: "y", at: 40, from: 0, to: 116.8 },
+      { id: "a", axis: "x", at: 20, from: 0, to: 30 },
+      { id: "b", axis: "x", at: 80, from: 50, to: 76.8 },
+    ] });
+    d = placeDivider(d, "a", 21, 23); // its back end comes to 38, near the side-to-side divider at 40
+    expect(d.dividers.find(x => x.id === "a")).toMatchObject({ from: 10, to: 40 });
+    expect(d.dividers.find(x => x.id === "a").at).toBe(21);
+    d = placeDivider(d, "b", 23.5, 63.4); // within the snap distance of "a": it lines up
+    expect(d.dividers.find(x => x.id === "b").at).toBe(21);
+  });
+
+  it("an end handle makes it longer or shorter and snaps too", () => {
+    let d = one({ axis: "y", at: 40, from: 10, to: 60 });
+    expect(setDividerEnd(d, "a", "to", 114).dividers[0].to).toBe(116.8);
+    expect(setDividerEnd(d, "a", "from", 58).dividers[0].from).toBe(55); // never shorter than 5 mm
+  });
+
+  it("turns a quarter turn about its middle, and stretches wall to wall", () => {
+    let d = one({ axis: "x", at: 50, from: 20, to: 40 });
+    d = turnDivider(d, "a");
+    expect(d.dividers[0]).toMatchObject({ axis: "y", at: 30, from: 40, to: 60 });
+    expect(fullLength(d, "a").dividers[0]).toMatchObject({ from: 0, to: 116.8 });
+  });
+
+  it("counts the pockets the pieces actually make", () => {
+    // A short divider leaves one pocket; joined to both walls it makes two.
+    expect(pockets(one({ axis: "x", at: 50, from: 20, to: 40 }))).toHaveLength(1);
+    expect(pockets(one({ axis: "x", at: 50 }))).toHaveLength(2);
+    // A T: one wall-to-wall divider, and a short one from the front wall up to it.
+    const d = normalize({ ...base(), dividers: [{ id: "a", axis: "y", at: 40 }, { id: "b", axis: "x", at: 50, from: 0, to: 40 }] });
+    expect(pockets(d)).toHaveLength(3);
+  });
+
+  it("keeps a short divider's place as the box grows", () => {
+    const d = one({ axis: "x", at: 50, from: 20, to: 40 });
+    const big = normalize({ ...d, depth: 160 }, d);
+    expect(big.dividers[0].from).toBeCloseTo(20 * 156.8 / 76.8, 0);
+    const full = one({ axis: "x", at: 50 }), deep = normalize({ ...full, depth: 160 }, full);
+    expect(ends(deep, deep.dividers[0])).toEqual([0, 156.8]);
   });
 });
