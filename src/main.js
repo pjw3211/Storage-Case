@@ -6,7 +6,7 @@
 // or a file.
 import { cad } from "./cad/client.js";
 import { createView } from "./view.js";
-import { DEFAULT_DESIGN, LIMITS, LIDS, IN, MAX_TRAYS, TRAY_HEIGHT, TRAY_MIN, normalize, moveDivider, placeDivider, setDividerEnd,
+import { DEFAULT_DESIGN, LIMITS, LIDS, DIVIDER_STYLES, IN, MAX_TRAYS, TRAY_HEIGHT, TRAY_MIN, normalize, moveDivider, placeDivider, setDividerEnd,
   turnDivider, fullLength, addDivider, dividerRange, inner, summary, partOf, withPart, addTray, placeTray, resizeTray, fillTray,
   trayZ, stackTop, problems, softStop, STOPS, sizeTrayEdge, copyTray, copyDivider } from "./design.js";
 
@@ -245,6 +245,9 @@ function renderTrays() {
 
 function renderDividers() {
   const d = state.design;
+  $("div-styles").innerHTML = DIVIDER_STYLES.map(x => `<button type="button" class="tile" role="radio" data-style="${x.id}" aria-checked="${d.dividerStyle === x.id}">${esc(x.name)}</button>`).join("");
+  for (const b of $("div-styles").querySelectorAll(".tile")) b.onclick = () => setDesign({ ...state.design, dividerStyle: b.dataset.style });
+  $("div-style-hint").textContent = DIVIDER_STYLES.find(x => x.id === d.dividerStyle).desc;
   if (state.parent !== "box" && !d.trays.some(t => t.id === state.parent)) state.parent = "box";
   const parents = [["box", "Box"], ...d.trays.map((t, k) => [t.id, `Tray ${k + 1}`])];
   $("div-parent").innerHTML = parents.map(([id, name]) => `<option value="${id}"${id === state.parent ? " selected" : ""}>${name}</option>`).join("");

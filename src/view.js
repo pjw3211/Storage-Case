@@ -9,7 +9,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { inner, ends, boxPart, trayPart, trayZ } from "./design.js";
+import { inner, ends, boxPart, trayPart, trayZ, slotLayout } from "./design.js";
 import { dividerBoxes } from "./cad/case.js";
 
 const PLASTIC = 0x4f86c6, TRAY = 0x7fb069, PICKED = 0xe8743b, HANDLE = 0xe8743b;
@@ -100,6 +100,14 @@ export function createView(host, { onSelect, onDivider, onDividerEnd, onTray, on
 
   // Dividers of one part (the box or a tray), in that part's own frame.
   function drawDividers(holder, part, parent, r) {
+    // Slot-in dividers: the ribs that make each one's channel move with it.
+    if (part.dividerStyle !== "fixed") for (const b of slotLayout(part).rails) {
+      const size = b.max.map((v, k) => v - b.min[k]);
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(...size), parent === "box" ? plastic : trayMat);
+      rail.position.set(...b.min.map((v, k) => v + size[k] / 2));
+      rail.userData.rail = true;
+      holder.add(rail);
+    }
     for (const b of dividerBoxes(part)) {
       const axis = part.dividers.find(x => x.id === b.id).axis;
       const size = b.max.map((v, k) => v - b.min[k]);

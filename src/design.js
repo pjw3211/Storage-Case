@@ -25,11 +25,19 @@ export const DEFAULT_DESIGN = {
   width: 120, depth: 80, height: 40,
   wall: 1.6, floor: 1.2, divider: 1.2, radius: 4,
   lid: "none", clearance: 0.25, lidLip: 5,
+  // "slot": dividers print as separate pieces that slot into channels in the
+  // floor and walls. "fixed": they print as part of the box.
+  dividerStyle: "slot",
   dividers: [],
   // Lift-out trays inside the box: [{ id, x, y, w, d, height, dividers }], x and y
   // being the front-left corner from the inside front-left corner.
   trays: [],
 };
+
+export const DIVIDER_STYLES = [
+  { id: "slot", name: "Slot-in dividers", desc: "Printed flat as separate pieces; they slide into channels in the floor and walls." },
+  { id: "fixed", name: "Printed in", desc: "Printed as part of the box or tray." },
+];
 
 export const LIDS = [
   { id: "none", name: "No lid" },
@@ -189,6 +197,7 @@ export function normalize(input, previous) {
   d.floor = Math.min(d.floor, d.height - 5);
   d.radius = Math.min(d.radius, Math.min(d.width, d.depth) / 2 - 0.5);
   if (!LIDS.some(l => l.id === d.lid)) d.lid = "none";
+  if (!DIVIDER_STYLES.some(x => x.id === d.dividerStyle)) d.dividerStyle = "slot";
   d.lidLip = Math.min(d.lidLip, inner(d).h);
 
   d.dividers = normalizeDividers(d, d.dividers, previous);
@@ -281,13 +290,81 @@ export function trayZ(d, tray) {
   return z;
 }
 
+// ---- slot-in dividers -------------------------------------------------------------------
+
+export const RAIL = { width: 1.2, height: 2, wall: 1.5 }; // the ribs that make a channel, mm
+
+/**
+ * How a part's (the box's or a tray's) dividers become separate pieces and
+ * the channels they slot into. All in the part's frame: centred on X = Y = 0,
+ * its bottom on Z = 0, like `dividerBoxes`.
+ *
+ * pieces: [{ id, axis, at, a, b, z0, z1, notches: [{ at, z0, z1, w }] }], each
+ * piece running from `a` to `b` along its length (from the inside front or left
+ * wall). Where two dividers cross, each gets a notch halfway (front-to-back
+ * ones from the top, side-to-side ones from the bottom) so they slide together.
+ * Ends at a wall stop a gap short of it; ends at another divider stop a gap
+ * short of its face.
+ *
+ * rails: [{ min, max }] boxes to add to the part: a pair of low ribs along the
+ * floor either side of each divider, and a pair of upright ribs on each wall
+ * it meets.
+ */
+export function slotLayout(d) {
+  const i = inner(d), t = d.divider, c = d.clearance, cap = d.dividerTop ?? d.height;
+  const R = RAIL.width, off = t / 2 + c + R / 2;
+  const top = x => Math.min(cap, x.height != null ? d.floor + x.height : d.height);
+  const pieces = [], rails = [];
+  for (const x of d.dividers) {
+    const [f, e] = ends(d, x), S = span(d, other(x.axis)), P = span(d, x.axis);
+    const across = d.dividers.filter(o => o.axis !== x.axis && o.id !== x.id);
+    const meets = o => { const [o0, o1] = ends(d, o); return x.at >= o0 - 0.05 && x.at <= o1 + 0.05 && o.at >= f - 0.05 && o.at <= e + 0.05; };
+    const endAt = v => {
+      if (v < 0.05 || v > S - 0.05) return "wall";
+      return across.some(o => meets(o) && Math.abs(o.at - v) < 0.05) ? "divider" : "free";
+    };
+    const kinds = [endAt(f), endAt(e)];
+    const a = kinds[0] === "wall" ? c : kinds[0] === "divider" ? f + t / 2 + c : f;
+    const b = kinds[1] === "wall" ? S - c : kinds[1] === "divider" ? e - t / 2 - c : e;
+    const z1 = top(x), notches = [];
+    for (const o of across) {
+      const [o0, o1] = ends(d, o);
+      // A crossing: each passes right through the other.
+      if (!(o.at > f + 0.05 && o.at < e - 0.05 && x.at > o0 + 0.05 && x.at < o1 - 0.05)) continue;
+      const mid = d.floor + (Math.min(z1, top(o)) - d.floor) / 2;
+      notches.push(x.axis === "x" ? { at: o.at, z0: mid, z1, w: t + 2 * c } : { at: o.at, z0: d.floor, z1: mid, w: t + 2 * c });
+    }
+    pieces.push({ id: x.id, axis: x.axis, at: x.at, a, b, z0: d.floor, z1, notches });
+
+    // Floor ribs, broken where another divider crosses or meets this one.
+    const cuts = across.filter(meets).map(o => [o.at - t / 2 - c - R - 0.1, o.at + t / 2 + c + R + 0.1]).sort((p, q) => p[0] - q[0]);
+    const runs = [];
+    let from = kinds[0] === "wall" ? -0.5 : a;
+    const to = kinds[1] === "wall" ? S + 0.5 : b;
+    for (const [c0, c1] of cuts) { if (c0 > from) runs.push([from, Math.min(c0, to)]); from = Math.max(from, c1); }
+    if (to > from) runs.push([from, to]);
+    const box = (u0, u1, v0, v1, z0, zz) => x.axis === "x"
+      ? { min: [-i.w / 2 + u0, -i.d / 2 + v0, z0], max: [-i.w / 2 + u1, -i.d / 2 + v1, zz] }
+      : { min: [-i.w / 2 + v0, -i.d / 2 + u0, z0], max: [-i.w / 2 + v1, -i.d / 2 + u1, zz] };
+    for (const side of [-1, 1]) {
+      const u = x.at + side * off;
+      if (u - R / 2 < 0 || u + R / 2 > P) continue;
+      for (const [v0, v1] of runs) if (v1 - v0 > 0.5) rails.push(box(u - R / 2, u + R / 2, v0, v1, d.floor - 0.01, d.floor + RAIL.height));
+      // Upright ribs on the walls it meets.
+      if (kinds[0] === "wall") rails.push(box(u - R / 2, u + R / 2, -0.5, RAIL.wall, d.floor - 0.01, z1));
+      if (kinds[1] === "wall") rails.push(box(u - R / 2, u + R / 2, S - RAIL.wall, S + 0.5, d.floor - 0.01, z1));
+    }
+  }
+  return { pieces, rails };
+}
+
 /** A tray as a box of its own, so the same divider tools work on it. */
 export function trayPart(d, tray) {
   return {
     width: tray.w, depth: tray.d, height: tray.height,
     wall: d.wall, floor: d.floor, divider: d.divider,
     radius: Math.max(0, Math.min(d.radius - d.wall - d.clearance, Math.min(tray.w, tray.d) / 2 - 0.5)),
-    lid: "none", dividers: tray.dividers || [], dividerTop: tray.height,
+    lid: "none", dividers: tray.dividers || [], dividerTop: tray.height, dividerStyle: d.dividerStyle, clearance: d.clearance,
   };
 }
 

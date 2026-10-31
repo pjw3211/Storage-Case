@@ -1,18 +1,19 @@
 // The exact solids: the box and lid come out the size asked for, dividers
 // join the walls and floor, and the lid's lip fits inside the box.
 import { describe, it, expect, beforeAll } from "vitest";
-import { DEFAULT_DESIGN, normalize, gridDividers, inner, trayPart, boxPart, withPart, stackTop } from "../src/design.js";
+import { DEFAULT_DESIGN, normalize, gridDividers, inner, trayPart, boxPart, withPart, stackTop, slotLayout, RAIL } from "../src/design.js";
 
 const LAYOUTS = [[1, 1], [2, 1], [2, 2], [3, 2], [4, 3]];
-import { buildCase, buildShell, bounds, dividerBoxes } from "../src/cad/case.js";
+import { buildCase, buildShell, buildPieces, bounds, dividerBoxes } from "../src/cad/case.js";
 import { partSTL } from "../src/cad/exports.js";
 import { loadReplicad } from "./oc-node.js";
 
 let R;
 beforeAll(async () => { R = await loadReplicad(); }, 60000);
 
+// Most tests here are for dividers printed in; slot-in ones have their own block.
 const design = (extra = {}, cols = 1, rows = 1) => {
-  const d = normalize({ ...DEFAULT_DESIGN, ...extra });
+  const d = normalize({ ...DEFAULT_DESIGN, dividerStyle: "fixed", ...extra });
   return normalize({ ...d, dividers: gridDividers(d, cols, rows) });
 };
 const close = (a, b) => a.forEach((v, k) => expect(v).toBeCloseTo(b[k], 1));
@@ -122,5 +123,65 @@ describe("free dividers", () => {
     const b = dividerBoxes(boxPart(d))[0];
     expect(b.min[1]).toBeCloseTo(-i.d / 2);
     expect(b.max[1]).toBeCloseTo(-i.d / 2 + 30);
+  });
+});
+
+describe("slot-in dividers", () => {
+  const slot = (dividers, extra = {}) => normalize({ ...DEFAULT_DESIGN, height: 30, ...extra, dividers });
+
+  it("adds a channel in the box for each divider and prints the dividers flat as their own part", () => {
+    const d = slot([{ id: "a", axis: "x", at: 58.4 }]), parts = buildCase(R, d);
+    expect(parts.map(p => p.id)).toEqual(["box", "box-dividers"]);
+    const i = inner(d), c = d.clearance, top = d.height;
+    // The box is the shell plus two floor ribs and four wall ribs.
+    const ribs = 2 * RAIL.width * RAIL.height * (i.d + 1) + 4 * RAIL.width * (RAIL.wall + 0.5) * (top - d.floor);
+    const shell = R.measureVolume(buildShell(R, d));
+    expect(R.measureVolume(parts[0].solid) - shell).toBeGreaterThan(ribs * 0.6);
+    expect(R.measureVolume(parts[0].solid) - shell).toBeLessThan(ribs);
+    close(bounds(parts[0].solid).max, [d.width / 2, d.depth / 2, d.height]);
+    // The piece lies flat: as long as the inside less a gap each end, as tall as the inside, one divider thick.
+    const b = bounds(parts[1].solid);
+    close(b.min, [0, 0, 0]);
+    close(b.max, [i.d - 2 * c, top - d.floor, d.divider]);
+  });
+
+  it("the channel is wide enough for the divider with a gap each side", () => {
+    const d = slot([{ id: "a", axis: "x", at: 58.4 }]), i = inner(d);
+    const rails = slotLayout(d).rails.filter(r => r.max[2] < d.floor + RAIL.height + 0.1);
+    expect(rails).toHaveLength(2);
+    const gap = rails[1].min[0] - rails[0].max[0];
+    expect(gap).toBeCloseTo(d.divider + 2 * d.clearance, 3);
+    expect((rails[0].max[0] + rails[1].min[0]) / 2).toBeCloseTo(-i.w / 2 + 58.4, 3);
+  });
+
+  it("crossing dividers get halving notches, and their channels leave room for each other", () => {
+    const d = slot([{ id: "a", axis: "x", at: 58.4 }, { id: "b", axis: "y", at: 38.4 }]);
+    const { pieces, rails } = slotLayout(d);
+    const [a, b] = pieces, mid = d.floor + (d.height - d.floor) / 2;
+    expect(a.notches).toEqual([{ at: 38.4, z0: mid, z1: d.height, w: d.divider + 2 * d.clearance }]);
+    expect(b.notches).toEqual([{ at: 58.4, z0: d.floor, z1: mid, w: d.divider + 2 * d.clearance }]);
+    // No rib runs through where the other divider stands.
+    const i = inner(d), xs = -i.w / 2 + 58.4, ys = -i.d / 2 + 38.4;
+    for (const r of rails) expect(r.min[0] < xs && r.max[0] > xs && r.min[1] < ys && r.max[1] > ys).toBe(false);
+    // Both pieces print in one flat part.
+    const flat = buildPieces(R, d), fb = bounds(flat);
+    expect(fb.max[2]).toBeCloseTo(d.divider, 2);
+    expect(R.measureVolume(flat)).toBeLessThan((a.b - a.a + b.b - b.a) * (d.height - d.floor) * d.divider);
+  });
+
+  it("a divider that ends at another stops a gap short of its face", () => {
+    const d = slot([{ id: "a", axis: "x", at: 58.4 }, { id: "b", axis: "y", at: 38.4, from: 0, to: 58.4 }]);
+    const b = slotLayout(d).pieces[1];
+    expect(b.a).toBeCloseTo(d.clearance);
+    expect(b.b).toBeCloseTo(58.4 - d.divider / 2 - d.clearance);
+    expect(b.notches).toEqual([]);
+  });
+
+  it("tray dividers slot in too, and each tray's dividers are their own part", () => {
+    let d = slot([], { height: 60 });
+    d = normalize({ ...d, trays: [{ id: "a", x: 0.25, y: 0.25, w: 58, d: 76.3, height: 15 }] });
+    const t = trayPart(d, d.trays[0]);
+    d = normalize(withPart(d, "a", { ...t, dividers: gridDividers(t, 2, 1) }));
+    expect(buildCase(R, d).map(p => p.id)).toEqual(["box", "tray-1", "tray-1-dividers"]);
   });
 });

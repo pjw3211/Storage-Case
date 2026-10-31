@@ -68,10 +68,19 @@ test("starts with one divider; drag it, resize the box and download the STL", as
   const downloads = [];
   page.on("download", dl => downloads.push(dl));
   await page.locator("#dl-stl").click();
-  await expect.poll(() => downloads.length, { timeout: 60000 }).toBe(2);
-  expect(downloads.map(x => x.suggestedFilename()).sort()).toEqual(["storage-case-150x80x40-box.stl", "storage-case-150x80x40-lid.stl"]);
+  await expect.poll(() => downloads.length, { timeout: 60000 }).toBe(3);
+  expect(downloads.map(x => x.suggestedFilename()).sort()).toEqual([
+    "storage-case-150x80x40-box-dividers.stl", "storage-case-150x80x40-box.stl", "storage-case-150x80x40-lid.stl"]);
   const bytes = readFileSync(await downloads[0].path());
   expect(bytes.length).toBe(84 + bytes.readUInt32LE(80) * 50);
+
+  // Printed in place instead: the divider is part of the box, so no separate file.
+  await page.locator('[data-tab="dividers"]').click();
+  await page.locator('.tile[data-style="fixed"]').click();
+  expect((await design(page)).dividerStyle).toBe("fixed");
+  downloads.length = 0;
+  await page.locator("#dl-stl").click();
+  await expect.poll(() => downloads.length, { timeout: 60000 }).toBe(2);
 });
 
 test("switch to inches, and the design is remembered", async ({ page }) => {
@@ -159,9 +168,9 @@ test("add trays, drag one around and it locks against two sides, give it divider
   const downloads = [];
   page.on("download", dl => downloads.push(dl));
   await page.locator("#dl-stl").click();
-  await expect.poll(() => downloads.length, { timeout: 60000 }).toBe(3);
+  await expect.poll(() => downloads.length, { timeout: 60000 }).toBe(4);
   expect(downloads.map(x => x.suggestedFilename()).sort()).toEqual([
-    "storage-case-120x80x60-box.stl", "storage-case-120x80x60-tray-1.stl", "storage-case-120x80x60-tray-2.stl"]);
+    "storage-case-120x80x60-box.stl", "storage-case-120x80x60-tray-1-dividers.stl", "storage-case-120x80x60-tray-1.stl", "storage-case-120x80x60-tray-2.stl"]);
 });
 
 test("shorten a divider by dragging its end, and it snaps to the divider it meets", async ({ page }) => {
