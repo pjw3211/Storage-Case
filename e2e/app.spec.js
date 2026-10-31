@@ -114,3 +114,54 @@ test("drag the width handle to make the box wider", async ({ page }) => {
   const xs = d.dividers.filter(x => x.axis === "x").map(x => x.at);
   expect(Math.abs(xs[1] - 2 * xs[0])).toBeLessThan(1);
 });
+
+test("the height handle stays on the back corner as the view turns", async ({ page }) => {
+  await waitForBuild(page, 0);
+  // From the default view (camera in front, to the right) it sits back left.
+  const handle = await page.evaluate(() => window.__app.view.heightCorner);
+  expect(handle).toEqual([-1, 1]);
+  // Drag the view round to look from the back: the handle moves to the front.
+  const box = await page.locator("#view canvas").boundingBox();
+  await page.mouse.move(box.x + 30, box.y + box.height / 2);
+  await page.mouse.down();
+  for (let k = 1; k <= 10; k++) await page.mouse.move(box.x + 30 + k * 35, box.y + box.height / 2);
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() => window.__app.view.heightCorner[1])).toBe(-1);
+});
+
+test("add two trays, lay out the first, and download every part", async ({ page }) => {
+  await waitForBuild(page, 0);
+  await page.locator("#d-height").fill("60");
+  await page.locator("#d-height").press("Enter");
+  let n = await built(page);
+  await page.locator("#add-tray").click();
+  await waitForBuild(page, n);
+  await expect(page.locator('[data-edit="box"]')).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#tray-controls")).toBeVisible();
+  // Tray 1 starts as one pocket; give it a 2 × 2 grid.
+  await page.locator('.tile[data-template="2x2"]').click();
+  let d = await design(page);
+  expect(d.trays).toHaveLength(1);
+  expect(d.trays[0].dividers).toHaveLength(2);
+  expect(d.dividers).toHaveLength(3); // the box keeps its 3 × 2 grid
+
+  n = await built(page);
+  await page.locator("#add-tray").click();
+  await waitForBuild(page, n);
+  await expect(page.locator("#summary")).toHaveText("120 × 80 × 60 mm, 6 pockets, 2 trays");
+
+  // Back to the box: its dividers now stop below the trays.
+  n = await built(page);
+  await page.locator('[data-edit="box"]').click();
+  await waitForBuild(page, n);
+  d = await design(page);
+  const top = await page.evaluate(() => window.__app.part.dividerTop);
+  expect(top).toBeCloseTo(60 - d.trays[0].height - d.trays[1].height, 1);
+
+  const downloads = [];
+  page.on("download", dl => downloads.push(dl));
+  await page.locator("#dl-stl").click();
+  await expect.poll(() => downloads.length, { timeout: 60000 }).toBe(3);
+  expect(downloads.map(x => x.suggestedFilename()).sort()).toEqual([
+    "storage-case-120x80x60-box.stl", "storage-case-120x80x60-tray-1.stl", "storage-case-120x80x60-tray-2.stl"]);
+});

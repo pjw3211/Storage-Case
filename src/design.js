@@ -15,6 +15,10 @@ export const LIMITS = {
   radius: [0, 30], clearance: [0.1, 0.6], lidLip: [2, 15],
 };
 
+export const MAX_TRAYS = 3;
+export const TRAY_HEIGHT = [8, 200];
+export const LEDGE = 2.5; // how far the ledge the trays sit on sticks out from the walls, mm
+
 export const MIN_POCKET = 5; // the narrowest pocket the app will make, mm
 
 export const DEFAULT_DESIGN = {
@@ -22,6 +26,7 @@ export const DEFAULT_DESIGN = {
   wall: 1.6, floor: 1.2, divider: 1.2, radius: 4,
   lid: "none", clearance: 0.25, lidLip: 5,
   dividers: [],
+  trays: [], // lift-out trays, bottom first: [{ id, height, dividers }]
 };
 
 export const LIDS = [
@@ -110,29 +115,102 @@ export function normalize(input, previous) {
   if (!LIDS.some(l => l.id === d.lid)) d.lid = "none";
   d.lidLip = Math.min(d.lidLip, inner(d).h);
 
-  let divs = Array.isArray(d.dividers) ? d.dividers.filter(x => x && (x.axis === "x" || x.axis === "y")) : [];
+  d.dividers = normalizeDividers(d, d.dividers, previous);
+  d.trays = normalizeTrays(d, d.trays, previous);
+  return d;
+}
+
+// Keep dividers in order, with room for a pocket either side, and drop any
+// that no longer fit. `part` is the box or a tray (see trayPart).
+function normalizeDividers(part, input, previous) {
+  let divs = Array.isArray(input) ? input.filter(x => x && (x.axis === "x" || x.axis === "y")) : [];
   if (previous) {
-    const was = { x: span(previous, "x"), y: span(previous, "y") }, now = { x: span(d, "x"), y: span(d, "y") };
+    const was = { x: span(previous, "x"), y: span(previous, "y") }, now = { x: span(part, "x"), y: span(part, "y") };
     divs = divs.map(x => was[x.axis] !== now[x.axis] ? { ...x, at: x.at * now[x.axis] / was[x.axis] } : x);
   }
   divs = divs.map(x => ({
     id: String(x.id || newId()), axis: x.axis, at: Number(x.at) || 0,
-    ...(x.height != null ? { height: clamp(Number(x.height), [3, inner(d).h]) } : {}),
+    ...(x.height != null ? { height: clamp(Number(x.height), [3, inner(part).h]) } : {}),
   }));
-  // Keep dividers in order and drop any that no longer fit.
   const kept = [];
   for (const axis of ["x", "y"]) {
-    const s = span(d, axis);
+    const s = span(part, axis);
     let last = -Infinity;
     for (const x of divs.filter(x => x.axis === axis).sort((a, b) => a.at - b.at)) {
-      const at = Math.max(x.at, MIN_POCKET + d.divider / 2, last + d.divider + MIN_POCKET);
-      if (at > s - MIN_POCKET - d.divider / 2) continue;
+      const at = Math.max(x.at, MIN_POCKET + part.divider / 2, last + part.divider + MIN_POCKET);
+      if (at > s - MIN_POCKET - part.divider / 2) continue;
       kept.push({ ...x, at: Math.round(at * 10) / 10 });
       last = at;
     }
   }
-  d.dividers = kept;
-  return d;
+  return kept;
+}
+
+// Trays fit in the space between the floor and the lid's lip; any that
+// don't fit are made shorter, then dropped.
+function normalizeTrays(d, input, previous) {
+  const list = (Array.isArray(input) ? input : []).filter(Boolean).slice(0, MAX_TRAYS);
+  const min = Math.max(TRAY_HEIGHT[0], d.floor + 5);
+  let room = stackTop(d) - d.floor;
+  const out = [];
+  for (const t of list) {
+    const height = Math.min(round(clamp(Number(t.height) || 15, TRAY_HEIGHT), 1), Math.floor(room));
+    if (height < min) break;
+    room -= height;
+    const tray = { id: String(t.id || newId()), height, dividers: [] };
+    const was = previous?.trays?.find(x => x.id === tray.id);
+    tray.dividers = normalizeDividers(trayPart(d, tray), t.dividers, was && trayPart(previous, was));
+    out.push(tray);
+  }
+  return out;
+}
+
+// ---- trays and the lid -----------------------------------------------------------------
+
+/** How high up the inside the trays (or the dividers) can reach, leaving room for the lid's lip. */
+export function stackTop(d) {
+  return d.lid === "lift" ? d.height - d.lidLip - 2 * d.clearance : d.height;
+}
+
+/** Where the bottom tray sits: the top of the ledge round the inside walls. */
+export function ledgeTop(d) {
+  return stackTop(d) - (d.trays || []).reduce((a, t) => a + t.height, 0);
+}
+
+/** A tray as a box of its own, so the same divider tools work on it. */
+export function trayPart(d, tray) {
+  const i = inner(d), c = d.clearance;
+  return {
+    width: i.w - 2 * c, depth: i.d - 2 * c, height: tray.height,
+    wall: d.wall, floor: d.floor, divider: d.divider, radius: Math.max(0, d.radius - d.wall - c),
+    lid: "none", dividers: tray.dividers || [], dividerTop: tray.height,
+  };
+}
+
+/** The box itself, with how high its dividers may go below the trays and the lid. */
+export function boxPart(d) {
+  return { ...d, dividerTop: (d.trays || []).length ? ledgeTop(d) : stackTop(d) };
+}
+
+/** The part being edited: "box" or a tray's id. */
+export function partOf(d, target) {
+  const tray = target !== "box" && (d.trays || []).find(t => t.id === target);
+  return tray ? trayPart(d, tray) : boxPart(d);
+}
+
+/** Write an edited part's dividers (and a tray's height) back into the design. */
+export function withPart(d, target, part) {
+  if (target === "box") return { ...d, dividers: part.dividers };
+  return { ...d, trays: d.trays.map(t => t.id === target ? { ...t, dividers: part.dividers, height: part.height } : t) };
+}
+
+/** Add a tray on top of the stack, or null if there is no room. */
+export function addTray(d) {
+  if ((d.trays || []).length >= MAX_TRAYS) return null;
+  const room = ledgeTop(d) - d.floor, min = Math.max(TRAY_HEIGHT[0], d.floor + 5);
+  if (room < min) return null;
+  const tray = { id: newId(), height: Math.max(min, Math.min(20, Math.floor(room / 2))), dividers: [] };
+  return { design: { ...d, trays: [...(d.trays || []), tray] }, id: tray.id };
 }
 
 /** The pockets as rectangles inside the box, for labels and fit checks. */
@@ -153,6 +231,7 @@ export function pockets(d) {
 /** One-line description, e.g. "120 × 80 × 40 mm, 6 pockets, lift-off lid". */
 export function summary(d, units = "mm") {
   const f = v => units === "in" ? (v / IN).toFixed(2) : String(Math.round(v));
-  const n = pockets(d).length;
-  return `${f(d.width)} × ${f(d.depth)} × ${f(d.height)} ${units}, ${n} pocket${n === 1 ? "" : "s"}${d.lid === "lift" ? ", lift-off lid" : ""}`;
+  const n = pockets(d).length, t = (d.trays || []).length;
+  return `${f(d.width)} × ${f(d.depth)} × ${f(d.height)} ${units}, ${n} pocket${n === 1 ? "" : "s"}`
+    + (t ? `, ${t} tray${t === 1 ? "" : "s"}` : "") + (d.lid === "lift" ? ", lift-off lid" : "");
 }

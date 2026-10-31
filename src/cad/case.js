@@ -4,7 +4,7 @@
 //
 // CAD frame: millimetres, Z up, X across the width, front faces -Y. The box
 // is centred on X = Y = 0 with its floor on Z = 0.
-import { inner } from "../design.js";
+import { inner, boxPart, trayPart, ledgeTop, LEDGE } from "../design.js";
 
 // A rounded rectangle centred on the origin, extruded up from z0.
 function slab(R, w, d, r, z0, h) {
@@ -12,19 +12,35 @@ function slab(R, w, d, r, z0, h) {
   return sketch.sketchOnPlane("XY", z0).extrude(h);
 }
 
-// The box's walls and floor with no dividers: what the 3D view shows, since
-// the view draws the dividers itself so they can be dragged.
-export function buildShell(R, d) {
-  const i = inner(d);
-  return slab(R, d.width, d.depth, d.radius, 0, d.height)
-    .cut(slab(R, i.w, i.d, Math.max(0, d.radius - d.wall), d.floor, d.height));
+// The step round the inside walls that the bottom tray sits on.
+function ledge(R, d) {
+  const i = inner(d), top = ledgeTop(d), r = Math.max(0, d.radius - d.wall);
+  if (!(d.trays || []).length || top - d.floor < 0.1) return null;
+  return slab(R, i.w + 1, i.d + 1, r > 0 ? r + 0.5 : 0, d.floor - 0.01, top - d.floor + 0.01)
+    .cut(slab(R, i.w - 2 * LEDGE, i.d - 2 * LEDGE, Math.max(0, r - LEDGE), d.floor - 1, top - d.floor + 2));
 }
 
-// Divider boxes in the CAD frame, for the solid and for the 3D view.
+// The cavity inside the walls, less the tray ledge.
+function cavity(R, d) {
+  const i = inner(d);
+  let c = slab(R, i.w, i.d, Math.max(0, d.radius - d.wall), d.floor, d.height);
+  const l = ledge(R, d);
+  return l ? c.cut(l) : c;
+}
+
+// The box's (or a tray's) walls and floor with no dividers: what the 3D
+// view shows, since the view draws the dividers itself so they can be dragged.
+export function buildShell(R, d) {
+  return slab(R, d.width, d.depth, d.radius, 0, d.height).cut(cavity(R, d));
+}
+
+// Divider boxes in the CAD frame, for the solid and for the 3D view. `d` is
+// the box (boxPart) or a tray (trayPart): box dividers stop below the trays
+// and the lid's lip.
 export function dividerBoxes(d) {
-  const i = inner(d), t = d.divider;
+  const i = inner(d), t = d.divider, cap = d.dividerTop ?? d.height;
   return d.dividers.map(x => {
-    const top = x.height != null ? d.floor + x.height : d.height;
+    const top = Math.min(cap, x.height != null ? d.floor + x.height : d.height);
     return x.axis === "x"
       ? { id: x.id, min: [-i.w / 2 + x.at - t / 2, -i.d / 2, 0], max: [-i.w / 2 + x.at + t / 2, i.d / 2, top] }
       : { id: x.id, min: [-i.w / 2, -i.d / 2 + x.at - t / 2, 0], max: [i.w / 2, -i.d / 2 + x.at + t / 2, top] };
@@ -37,14 +53,13 @@ const boxSolid = (R, b) => R.makeBaseBox(b.max[0] - b.min[0], b.max[1] - b.min[1
 // The finished box as one solid: the cavity is the inside minus the
 // dividers, so each divider joins the walls and floor cleanly.
 export function buildBox(R, d) {
-  const i = inner(d);
-  let cavity = slab(R, i.w, i.d, Math.max(0, d.radius - d.wall), d.floor, d.height);
+  let space = cavity(R, d);
   for (const b of dividerBoxes(d)) {
     // Dividers run slightly into the walls so nothing is left floating.
     const grow = b.max[0] - b.min[0] > b.max[1] - b.min[1] ? [[-0.5, 0, 0], [0.5, 0, 0]] : [[0, -0.5, 0], [0, 0.5, 0]];
-    cavity = cavity.cut(boxSolid(R, { min: b.min.map((v, k) => v + grow[0][k]), max: b.max.map((v, k) => v + grow[1][k]) }));
+    space = space.cut(boxSolid(R, { min: b.min.map((v, k) => v + grow[0][k]), max: b.max.map((v, k) => v + grow[1][k]) }));
   }
-  return slab(R, d.width, d.depth, d.radius, 0, d.height).cut(cavity);
+  return slab(R, d.width, d.depth, d.radius, 0, d.height).cut(space);
 }
 
 // A lift-off lid, printed top-down: the flat top on the bed, the lip on top
@@ -60,8 +75,9 @@ export function buildLid(R, d) {
 
 /** Every part to print: [{ id, name, solid }]. */
 export function buildCase(R, d) {
-  const parts = [{ id: "box", name: "Box", solid: buildBox(R, d) }];
+  const parts = [{ id: "box", name: "Box", solid: buildBox(R, boxPart(d)) }];
   if (d.lid === "lift") parts.push({ id: "lid", name: "Lid", solid: buildLid(R, d) });
+  (d.trays || []).forEach((t, k) => parts.push({ id: "tray-" + (k + 1), name: `Tray ${k + 1}`, solid: buildBox(R, trayPart(d, t)) }));
   return parts;
 }
 

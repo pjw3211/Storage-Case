@@ -5,6 +5,7 @@ import opencascade from "replicad-opencascadejs";
 import wasmUrl from "replicad-opencascadejs/wasm?url";
 import * as R from "replicad";
 import { buildShell, buildCase } from "./case.js";
+import { partOf } from "../design.js";
 import { partMesh, partSTL } from "./exports.js";
 
 const ready = opencascade({ locateFile: () => wasmUrl }).then(OC => R.setOC(OC));
@@ -12,11 +13,13 @@ const ready = opencascade({ locateFile: () => wasmUrl }).then(OC => R.setOC(OC))
 async function handle(msg) {
   await ready;
   if (msg.cmd === "view") {
-    // The shell without dividers (the page draws those so they can be
-    // dragged), plus the lid if there is one.
-    const solids = [{ id: "shell", solid: buildShell(R, msg.design) }];
-    const lid = buildCase(R, { ...msg.design, dividers: [] }).find(p => p.id === "lid");
-    if (lid) solids.push({ id: "lid", solid: lid.solid });
+    // The part being edited without its dividers (the page draws those so
+    // they can be dragged). Editing the box, the lid and the trays show
+    // beside it, finished.
+    const d = msg.design, target = msg.target || "box";
+    const solids = [{ id: "shell", solid: buildShell(R, partOf(d, target)) }];
+    if (target === "box")
+      for (const p of buildCase(R, { ...d, dividers: [] }).slice(1)) solids.push({ id: p.id, solid: p.solid });
     const transfer = [];
     const meshes = solids.map(p => {
       const m = partMesh(p.solid);

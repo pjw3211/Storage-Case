@@ -1,7 +1,8 @@
 // The design rules: sizes stay printable, dividers stay in order with room
 // for a pocket either side, and resizing keeps a grid even.
 import { describe, it, expect } from "vitest";
-import { DEFAULT_DESIGN, LIMITS, MIN_POCKET, normalize, gridDividers, moveDivider, addDivider, pockets, inner, summary } from "../src/design.js";
+import { DEFAULT_DESIGN, LIMITS, MIN_POCKET, normalize, gridDividers, moveDivider, addDivider, pockets, inner, summary,
+  stackTop, ledgeTop, boxPart, trayPart, partOf, withPart, addTray } from "../src/design.js";
 
 const base = (extra = {}) => normalize({ ...DEFAULT_DESIGN, ...extra });
 
@@ -65,5 +66,43 @@ describe("dividers", () => {
     let d = base({ lid: "lift" }); d = { ...d, dividers: gridDividers(d, 3, 2) };
     expect(summary(d)).toBe("120 × 80 × 40 mm, 6 pockets, lift-off lid");
     expect(summary(d, "in")).toMatch(/^4\.72 × 3\.15 × 1\.57 in/);
+  });
+});
+
+describe("lid and trays", () => {
+  it("leaves room for the lid's lip above the dividers", () => {
+    const d = base({ lid: "lift", lidLip: 6, clearance: 0.25 });
+    expect(stackTop(d)).toBeCloseTo(40 - 6 - 0.5);
+    expect(boxPart(d).dividerTop).toBeCloseTo(stackTop(d));
+    expect(boxPart(base()).dividerTop).toBe(40);
+  });
+
+  it("adds trays on top of each other, up to three, while there is room", () => {
+    let d = base({ height: 80 });
+    const ids = [];
+    for (let k = 0; k < 3; k++) { const r = addTray(d); expect(r).not.toBeNull(); d = normalize(r.design); ids.push(r.id); }
+    expect(d.trays.map(t => t.id)).toEqual(ids);
+    expect(addTray(d)).toBeNull();
+    expect(ledgeTop(d)).toBeCloseTo(80 - d.trays.reduce((a, t) => a + t.height, 0));
+    expect(boxPart(d).dividerTop).toBeCloseTo(ledgeTop(d));
+  });
+
+  it("shortens or drops trays that no longer fit", () => {
+    let d = normalize({ ...base({ height: 80 }), trays: [{ id: "a", height: 40 }, { id: "b", height: 40 }] });
+    expect(d.trays.map(t => t.height)).toEqual([40, 38]); // 80 less the 1.2 mm floor, rounded down
+    d = normalize({ ...d, height: 45 }, d);
+    expect(d.trays.map(t => t.id)).toEqual(["a"]);
+    expect(ledgeTop(d)).toBeGreaterThanOrEqual(d.floor);
+  });
+
+  it("a tray is a smaller box with its own dividers", () => {
+    let d = normalize({ ...base(), trays: [{ id: "a", height: 15 }] });
+    const t = trayPart(d, d.trays[0]), i = inner(d);
+    expect(t.width).toBeCloseTo(i.w - 2 * d.clearance);
+    expect(t.depth).toBeCloseTo(i.d - 2 * d.clearance);
+    d = normalize(withPart(d, "a", { ...t, dividers: gridDividers(t, 2, 2) }));
+    expect(pockets(partOf(d, "a"))).toHaveLength(4);
+    expect(d.dividers).toHaveLength(0);
+    expect(summary(d)).toBe("120 × 80 × 40 mm, 1 pocket, 1 tray");
   });
 });
