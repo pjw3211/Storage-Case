@@ -306,3 +306,17 @@ describe("handles, soft stops and copies", () => {
     expect(copyDivider(thin, "a")).toBeNull();
   });
 });
+
+describe("box dividers and trays", () => {
+  it("a box divider snaps just clear of a tray's side", () => {
+    let d = base({ height: 60, dividers: [{ id: "a", axis: "x", at: 58.4 }] });
+    d = normalize({ ...d, trays: [{ id: "t", x: 0.25, y: 0.25, w: 40, d: 76.3, height: 20 }] }, d);
+    const side = 0.25 + 40 + d.clearance + d.divider / 2;
+    const part = boxPart(d);
+    expect(placeDivider(part, "a", side + 2.5, 38.4).dividers[0].at).toBeCloseTo(side, 1);
+    expect(placeDivider(part, "a", side + 6, 38.4).dividers[0].at).toBe(Math.round(side + 6));
+    // There it no longer clashes with the tray.
+    const placed = normalize(withPart(d, "box", placeDivider(part, "a", side + 2.5, 38.4)), d);
+    expect(problems(placed)).toEqual([]);
+  });
+});

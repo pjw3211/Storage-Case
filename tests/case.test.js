@@ -185,3 +185,32 @@ describe("slot-in dividers", () => {
     expect(buildCase(R, d).map(p => p.id)).toEqual(["box", "tray-1", "tray-1-dividers"]);
   });
 });
+
+describe("rounded corners", () => {
+  // A big corner radius, and a slot-in divider close to the left wall, inside the curve.
+  const d = normalize({ ...DEFAULT_DESIGN, height: 30, radius: 20, dividers: [{ id: "a", axis: "x", at: 8 }] });
+  const i = inner(d);
+
+  it("a slot-in divider near a corner stops short of the curved wall, and its ribs start on it", () => {
+    const { pieces, rails } = slotLayout(d), p = pieces[0];
+    expect(p.a).toBeGreaterThan(d.clearance + 2);
+    expect(p.b).toBeCloseTo(i.d - p.a, 3);
+    // The piece, stood in place, doesn't touch the box anywhere.
+    const box = buildCase(R, d)[0].solid;
+    const t = d.divider, x0 = -i.w / 2 + p.at;
+    const piece = R.makeBaseBox(t, p.b - p.a, p.z1 - p.z0).translate([x0, -i.d / 2 + (p.a + p.b) / 2, p.z0]);
+    expect(R.measureVolume(box.intersect(piece))).toBeCloseTo(0, 2);
+    // Every rib overlaps the box's walls or floor, so none float.
+    const shell = buildShell(R, d);
+    for (const r of rails) {
+      const rib = R.makeBaseBox(r.max[0] - r.min[0], r.max[1] - r.min[1], r.max[2] - r.min[2])
+        .translate([(r.min[0] + r.max[0]) / 2, (r.min[1] + r.max[1]) / 2, r.min[2]]);
+      expect(R.measureVolume(shell.intersect(rib))).toBeGreaterThan(0.01);
+    }
+  }, 60000);
+
+  it("away from the corners nothing changes", () => {
+    const mid = normalize({ ...d, dividers: [{ id: "a", axis: "x", at: 58.4 }] });
+    expect(slotLayout(mid).pieces[0].a).toBeCloseTo(d.clearance, 5);
+  });
+});

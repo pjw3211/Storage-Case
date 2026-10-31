@@ -248,3 +248,20 @@ test("a picked tray gets its own handles: drag them to resize with soft stops, t
   expect(d.dividers).toHaveLength(2);
   await expect(page.locator("#quick-name")).toHaveText("Divider 2 in box");
 });
+
+test("a box divider snaps beside a tray's side", async ({ page }) => {
+  await waitForBuild(page, 0);
+  await page.locator("#d-height").fill("60");
+  await page.locator("#d-height").press("Enter");
+  await page.locator('[data-tab="trays"]').click();
+  await page.locator("#add-tray").click();
+  let d = await design(page);
+  const t = d.trays[0], side = +(t.x + t.w + d.clearance + d.divider / 2).toFixed(1);
+  await expect(page.locator("#problems")).toBeVisible(); // the divider runs under the tray
+  // Drag the box's divider (above the tray, at the box's rim) to just past the tray's right side.
+  const div = d.dividers[0];
+  await dragFromTo(page, await inside(page, div.at, 60), await inside(page, side + 2, 60));
+  d = await design(page);
+  expect(d.dividers[0].at).toBeCloseTo(side, 1);
+  await expect(page.locator("#problems")).toBeHidden();
+});
