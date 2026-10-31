@@ -393,6 +393,85 @@ export function fillTray(d, id, axis) {
   return resizeTray(d, id, axis === "x" ? { x: c, w: i.w - 2 * c } : { y: c, d: i.d - 2 * c });
 }
 
+// Soft stops: a size dragged with a handle sticks to round numbers (every
+// 10 mm across, every 5 mm up) when it comes close; typed sizes stay exact.
+export const STOPS = { size: 10, height: 5 };
+export function softStop(v, step) {
+  const n = Math.round(v / step) * step;
+  return Math.abs(n - v) <= step * 0.2 ? n : v;
+}
+
+// True when every tray still ends below the lid's lip.
+const traysFit = d => d.trays.every(t => trayZ(d, t) + t.height <= stackTop(d) + 0.01);
+
+/**
+ * Drag one side of a tray with its handle. `edge` is "left", "right",
+ * "front", "back" (`value` is where that side is, from the inside front-left
+ * corner) or "top" (`value` is the tray's height). The other side stays put.
+ * Sides stop at the walls and at trays beside it, and snap to them.
+ */
+export function sizeTrayEdge(d, id, edge, value) {
+  const tray = d.trays.find(t => t.id === id);
+  if (!tray) return d;
+  const set = change => ({ ...d, trays: d.trays.map(t => t.id === id ? { ...t, ...change } : t) });
+  if (edge === "top") {
+    const lo = Math.max(TRAY_HEIGHT[0], d.floor + 5);
+    let h = Math.round(clamp(softStop(value, STOPS.height), [lo, TRAY_HEIGHT[1]]));
+    while (h > lo && !traysFit(set({ height: h }))) h--;
+    return set({ height: h });
+  }
+  const i = inner(d), c = d.clearance, ax = edge === "left" || edge === "right" ? "x" : "y";
+  const [pos, size, S] = ax === "x" ? ["x", "w", i.w] : ["y", "d", i.d];
+  const [p, q] = ax === "x" ? ["y", "d"] : ["x", "w"];
+  const lo = tray[pos], hi = tray[pos] + tray[size], z = trayZ(d, tray);
+  // Trays on the same level that sit beside this one.
+  const beside = d.trays.filter(o => o.id !== id && Math.abs(trayZ(d, o) - z) < 0.01 && o[p] < tray[p] + tray[q] - 0.5 && tray[p] < o[p] + o[q] - 0.5);
+  let next;
+  if (edge === "right" || edge === "back") {
+    const stop = Math.min(S - c, ...beside.filter(o => o[pos] >= hi - 0.5).map(o => o[pos] - c));
+    const v = Math.abs(value - stop) <= SNAP ? stop : lo + softStop(value - lo, STOPS.size);
+    next = { [size]: fine(clamp(v, [lo + TRAY_MIN, stop]) - lo) };
+  } else {
+    const stop = Math.max(c, ...beside.filter(o => o[pos] + o[size] <= lo + 0.5).map(o => o[pos] + o[size] + c));
+    const v = Math.abs(value - stop) <= SNAP ? stop : hi - softStop(hi - value, STOPS.size);
+    const at = clamp(v, [stop, hi - TRAY_MIN]);
+    next = { [pos]: fine(at), [size]: fine(hi - at) };
+  }
+  return set(next);
+}
+
+/** Copy a tray, dividers and all, into the nearest free spot (or on top of it), or null if there is no room. */
+export function copyTray(d, id) {
+  const src = d.trays.find(t => t.id === id);
+  if (!src || d.trays.length >= MAX_TRAYS) return null;
+  const copy = { ...src, id: newId(), dividers: src.dividers.map(x => ({ ...x, id: newId() })) };
+  let best = null;
+  for (const a of trayStops(d, copy, "x")) for (const b of trayStops(d, copy, "y")) {
+    const at = { ...copy, x: a.v, y: b.v };
+    if (d.trays.some(o => footprintsOverlap(o, at)) || trayTouches(d, copy, a.v, b.v) < 2) continue;
+    const dist = Math.hypot(a.v - src.x, b.v - src.y);
+    if (!best || dist < best.dist - 1e-6) best = { dist, x: fine(a.v), y: fine(b.v) };
+  }
+  if (best) [copy.x, copy.y] = [best.x, best.y]; // otherwise it stacks on top of the original
+  const next = { ...d, trays: [...d.trays, copy] };
+  return traysFit(next) ? { design: next, id: copy.id } : null;
+}
+
+/** Copy a divider beside itself, halfway to the next divider or wall, or null if there is no room either side. */
+export function copyDivider(d, id) {
+  const div = d.dividers.find(x => x.id === id);
+  if (!div) return null;
+  const S = span(d, div.axis);
+  const ats = [-d.divider / 2, S + d.divider / 2, ...d.dividers.filter(x => x.id !== id && x.axis === div.axis && overlap(d, x, div)).map(x => x.at)];
+  const above = Math.min(...ats.filter(v => v > div.at)), below = Math.max(...ats.filter(v => v < div.at));
+  for (const [a, b] of [[div.at, above], [below, div.at]]) {
+    if (b - a < 2 * MIN_POCKET + 2 * d.divider) continue;
+    const copy = { ...div, id: newId(), at: round((a + b) / 2) };
+    return { design: { ...d, dividers: [...d.dividers, copy] }, id: copy.id };
+  }
+  return null;
+}
+
 /** Add a tray half the inside's width, in the first free corner (or on top of the others), or null if there is no room. */
 export function addTray(d) {
   if ((d.trays || []).length >= MAX_TRAYS) return null;

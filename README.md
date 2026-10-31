@@ -8,12 +8,12 @@ Design a 3D-printable storage case on your phone, without CAD. Set the size, dro
 
 ## What it does now
 
-It works like a small CAD assembly: every part is a model on screen that you tap to pick and drag to move.
+It works like a small CAD assembly: every part is a model on screen that you tap to pick and drag to move. The round orange handles sit on whatever is picked (the box, or a tray) and resize it. Dragged sizes stick at every 10 mm across and every 5 mm up; typed sizes stay exact.
 
 1. **Parts list.** On the left (behind the Parts button on a phone): the box, each tray, and the dividers in each. Tap one to pick it.
 2. **Box tab.** Width, depth and height (or drag the round orange handles), wall, floor and divider thickness, corner radius, and the lid.
-3. **Trays tab.** Add lift-out trays of any size. Drag a tray around inside the box: when you let go it locks against at least two sides, the walls or other trays. Drop it on another tray to stack it on top. Full width and Full depth stretch it to the walls.
-4. **Dividers tab.** Choose the box or a tray, then add front-to-back or side-to-side dividers. Drag one anywhere: it lines up with other dividers, and its ends snap to the walls and to dividers they meet. Tap one to drag its end dots, turn it 90°, stretch it wall to wall, or lower it for finger access.
+3. **Trays tab.** Add lift-out trays of any size. Drag a tray around inside the box: when you let go it locks against at least two sides, the walls or other trays. Drop it on another tray to stack it on top. Full width and Full depth stretch it to the walls, and Copy tray adds a copy, dividers and all.
+4. **Dividers tab.** Choose the box or a tray, then add front-to-back or side-to-side dividers. Drag one anywhere: it lines up with other dividers, and its ends snap to the walls and to dividers they meet. Tap one to drag its end dots, turn it 90°, stretch it wall to wall, copy it, or lower it for finger access.
 5. **Quick delete.** Whatever is picked shows a Delete button at the bottom of the view.
 6. **Lid.** None, or a lift-off lid with a lip that sits inside the walls; dividers and trays stop below the lip.
 7. **Download and share.** One STL per part (box, lid, each tray), each laid flat on the bed. Share a link that opens the same design, or save it as a design file and open it again later.

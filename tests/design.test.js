@@ -2,7 +2,8 @@
 // for a pocket either side, and resizing keeps a grid even.
 import { describe, it, expect } from "vitest";
 import { DEFAULT_DESIGN, LIMITS, MIN_POCKET, normalize, gridDividers, moveDivider, addDivider, pockets, inner, summary,
-  stackTop, boxPart, trayPart, partOf, withPart, addTray, placeTray, resizeTray, fillTray, trayZ, trayTouches, problems, ends, placeDivider, setDividerEnd, turnDivider, fullLength } from "../src/design.js";
+  stackTop, boxPart, trayPart, partOf, withPart, addTray, placeTray, resizeTray, fillTray, trayZ, trayTouches, problems, ends, placeDivider, setDividerEnd, turnDivider, fullLength,
+  softStop, sizeTrayEdge, copyTray, copyDivider } from "../src/design.js";
 
 const base = (extra = {}) => normalize({ ...DEFAULT_DESIGN, ...extra });
 
@@ -217,5 +218,91 @@ describe("free dividers", () => {
     expect(big.dividers[0].from).toBeCloseTo(20 * 156.8 / 76.8, 0);
     const full = one({ axis: "x", at: 50 }), deep = normalize({ ...full, depth: 160 }, full);
     expect(ends(deep, deep.dividers[0])).toEqual([0, 156.8]);
+  });
+});
+
+describe("handles, soft stops and copies", () => {
+  // A 120 × 80 × 60 box (inside 116.8 × 76.8) with one 40 × 30 tray in the front-left corner.
+  const withTray = () => {
+    let d = base({ height: 60 });
+    const r = addTray(d);
+    d = normalize(r.design, d);
+    d = normalize(resizeTray(d, r.id, { w: 40, d: 30 }), d);
+    return { d, id: r.id };
+  };
+
+  it("sticks to round numbers only when close", () => {
+    expect(softStop(48.5, 10)).toBe(50);
+    expect(softStop(46, 10)).toBe(46);
+    expect(softStop(24.2, 5)).toBe(25);
+    expect(softStop(23, 5)).toBe(23);
+  });
+
+  it("drags a tray's free side out, with soft stops, keeping the other side put", () => {
+    const { d, id } = withTray();
+    const t = sizeTrayEdge(d, id, "right", 0.25 + 58.6).trays[0];
+    expect(t).toMatchObject({ x: 0.25, w: 60 });
+    expect(sizeTrayEdge(d, id, "right", 0.25 + 57).trays[0].w).toBe(57);
+    // Near the far wall it snaps to the wall, and never goes through it.
+    expect(sizeTrayEdge(d, id, "right", 114).trays[0].w).toBeCloseTo(116.3, 2);
+    expect(sizeTrayEdge(d, id, "right", 500).trays[0].w).toBeCloseTo(116.3, 2);
+    expect(sizeTrayEdge(d, id, "back", -50).trays[0].d).toBe(20);
+  });
+
+  it("drags the left side of a tray against the right wall", () => {
+    let { d, id } = withTray();
+    d = placeTray(d, id, 76.55, 0.25, true);
+    const t = sizeTrayEdge(d, id, "left", 116.55 - 49.2).trays[0];
+    expect(t.w).toBe(50);
+    expect(t.x + t.w).toBeCloseTo(116.55, 2);
+  });
+
+  it("stops a tray's side at the tray beside it", () => {
+    let { d, id } = withTray();
+    const r = copyTray(d, id);
+    // Move the copy against the right wall, level with the original.
+    d = normalize(placeTray(normalize(r.design, d), r.id, 60, 0.25, true), d);
+    expect(d.trays.find(t => t.id === r.id)).toMatchObject({ x: 76.55, y: 0.25 });
+    expect(sizeTrayEdge(d, id, "right", 100).trays[0].w).toBeCloseTo(76.05, 2);
+  });
+
+  it("drags a tray's height in 5 mm stops, below the lid", () => {
+    const { d, id } = withTray();
+    expect(sizeTrayEdge(d, id, "top", 34.3).trays[0].height).toBe(35);
+    expect(sizeTrayEdge(d, id, "top", 33).trays[0].height).toBe(33);
+    expect(sizeTrayEdge(d, id, "top", 500).trays[0].height).toBe(Math.floor(60 - d.floor));
+    const lid = normalize({ ...d, lid: "lift" }, d);
+    expect(sizeTrayEdge(lid, id, "top", 500).trays[0].height).toBe(Math.floor(stackTop(lid) - lid.floor));
+  });
+
+  it("copies a tray with its dividers into a free spot, or on top when the floor is full", () => {
+    let { d, id } = withTray();
+    d = withPart(d, id, addDivider(partOf(d, id), "x").design);
+    const r = copyTray(d, id), copy = r.design.trays.find(t => t.id === r.id);
+    expect(copy).toMatchObject({ w: 40, d: 30, height: 20 });
+    expect(copy.dividers).toHaveLength(1);
+    expect(copy.dividers[0].id).not.toBe(d.trays[0].dividers[0].id);
+    expect(trayTouches(r.design, copy)).toBeGreaterThanOrEqual(2);
+    expect(trayZ(r.design, copy)).toBe(d.floor);
+    // A full-size tray has no room beside it, so its copy stacks on top.
+    const full = normalize(fillTray(fillTray(d, id, "x"), id, "y"), d);
+    const s = copyTray(full, id), up = s.design.trays.find(t => t.id === s.id);
+    expect(trayZ(s.design, up)).toBe(full.floor + 20);
+    // No room above either: no copy.
+    const tall = normalize(resizeTray(full, id, { height: 50 }), full);
+    expect(copyTray(tall, id)).toBeNull();
+  });
+
+  it("copies a divider halfway to the next divider or wall", () => {
+    const d = base({ dividers: [{ id: "a", axis: "x", at: 40 }] });
+    const r = copyDivider(d, "a"), copy = r.design.dividers.find(x => x.id === r.id);
+    expect(copy.at).toBeCloseTo((40 + 116.8 + 0.6) / 2, 1);
+    expect(copy).toMatchObject({ axis: "x", from: 0, to: 76.8 });
+    // Too tight on the right, so it goes on the left.
+    const tight = base({ dividers: [{ id: "a", axis: "x", at: 105 }] });
+    expect(copyDivider(tight, "a").design.dividers[1].at).toBeLessThan(105);
+    // No room either side.
+    const thin = base({ width: 24, dividers: [{ id: "a", axis: "x", at: 10.4 }] });
+    expect(copyDivider(thin, "a")).toBeNull();
   });
 });

@@ -8,7 +8,7 @@ import { cad } from "./cad/client.js";
 import { createView } from "./view.js";
 import { DEFAULT_DESIGN, LIMITS, LIDS, IN, MAX_TRAYS, TRAY_HEIGHT, TRAY_MIN, normalize, moveDivider, placeDivider, setDividerEnd,
   turnDivider, fullLength, addDivider, dividerRange, inner, summary, partOf, withPart, addTray, placeTray, resizeTray, fillTray,
-  trayZ, stackTop, problems } from "./design.js";
+  trayZ, stackTop, problems, softStop, STOPS, sizeTrayEdge, copyTray, copyDivider } from "./design.js";
 
 const $ = id => document.getElementById(id);
 const STORE = "storage-case-v1";
@@ -59,8 +59,19 @@ const view = createView($("view"), {
     const t = state.design.trays.find(x => x.id === id);
     setDesign(placeTray(state.design, id, t.x, t.y, true));
   },
+  onTraySize(id, edge, value, done) {
+    if (!done) { state.design = sizeTrayEdge(state.design, id, edge, value); view.setDesign(state.design); renderTrays(); return; }
+    // Let go: make sure it still touches two sides, and rebuild it.
+    const t = state.design.trays.find(x => x.id === id);
+    if (t) setDesign(placeTray(normalize(state.design, state.design), id, t.x, t.y, true));
+  },
   onResize(change, done) {
-    if (!done) { setDesign({ ...state.design, ...change }, { quiet: true }); return; }
+    if (!done) {
+      // Soft stops: the box sticks to every 10 mm across and every 5 mm up.
+      for (const k of Object.keys(change)) change[k] = softStop(change[k], k === "height" ? STOPS.height : STOPS.size);
+      setDesign({ ...state.design, ...change }, { quiet: true });
+      return;
+    }
     save(); render(); scheduleBuild(0);
   },
 });
@@ -208,6 +219,7 @@ function renderTrays() {
     <div class="row">
       <button class="btn" id="t-fill-x" type="button">Full width</button>
       <button class="btn" id="t-fill-y" type="button">Full depth</button>
+      <button class="btn" id="t-copy" type="button">Copy tray</button>
       <button class="btn" id="t-dividers" type="button">Its dividers</button>
       <button class="btn danger" id="t-delete" type="button">Delete</button>
     </div>`;
@@ -221,6 +233,12 @@ function renderTrays() {
   const relock = next => { const m = next.trays.find(x => x.id === t.id); setDesign(placeTray(normalize(next, state.design), t.id, m.x, m.y, true)); };
   $("t-fill-x").onclick = () => relock(fillTray(state.design, t.id, "x"));
   $("t-fill-y").onclick = () => relock(fillTray(state.design, t.id, "y"));
+  $("t-copy").onclick = () => {
+    const r = copyTray(state.design, t.id);
+    if (!r) { setStatus(d.trays.length >= MAX_TRAYS ? `${MAX_TRAYS} trays is the most` : "No room for a copy. Make the box taller or the tray shorter.", "error"); return; }
+    setDesign(r.design);
+    pick({ kind: "tray", id: r.id });
+  };
   $("t-dividers").onclick = () => { state.parent = t.id; state.tab = "dividers"; save(); render(); };
   $("t-delete").onclick = () => remove({ kind: "tray", id: t.id });
 }
@@ -262,6 +280,7 @@ function renderDividers() {
     <div class="row">
       <button class="btn" id="sel-turn" type="button">Turn 90°</button>
       <button class="btn" id="sel-full" type="button">Wall to wall</button>
+      <button class="btn" id="sel-copy" type="button">Copy divider</button>
       <button class="btn danger" id="sel-delete" type="button">Delete</button>
     </div>`;
   const parent = state.parent;
@@ -278,6 +297,12 @@ function renderDividers() {
   };
   $("sel-turn").onclick = () => setDesign(withPart(state.design, parent, turnDivider(partOf(state.design, parent), div.id)));
   $("sel-full").onclick = () => setDesign(withPart(state.design, parent, fullLength(partOf(state.design, parent), div.id)));
+  $("sel-copy").onclick = () => {
+    const r = copyDivider(partOf(state.design, parent), div.id);
+    if (!r) { setStatus("No room for a copy beside it", "error"); return; }
+    setDesign(withPart(state.design, parent, r.design));
+    pick({ kind: "divider", id: r.id, parent });
+  };
   $("sel-delete").onclick = () => remove(sel);
 }
 
