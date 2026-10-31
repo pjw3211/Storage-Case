@@ -1,0 +1,24 @@
+{
+  "name": "storage-case",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Design a 3D-printable storage case on your phone: size, dividers, lid, and STL download.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "replicad": "^1.1.0",
+    "replicad-opencascadejs": "^1.1.0",
+    "three": "0.160.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.1",
+    "vite": "5.4.11",
+    "vitest": "2.1.8"
+  }
+}
