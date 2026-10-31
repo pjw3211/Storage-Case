@@ -186,11 +186,11 @@ function sliders(host, list) {
 function renderBox() {
   const d = state.design;
   renderDims();
-  sliders($("walls"), [["wall", "Wall thickness"], ["floor", "Floor thickness"], ["divider", "Divider thickness"], ["radius", "Corner radius"]]);
+  sliders($("walls"), [["wall", "Wall thickness"], ["floor", "Floor thickness"], ["divider", "Divider thickness"], ["radius", "Corner radius"], ["clearance", "Fit gap (lid, trays, slot-in dividers)"]]);
   $("lids").innerHTML = LIDS.map(l => `<button type="button" class="tile" role="radio" data-lid="${l.id}" aria-checked="${d.lid === l.id}">${esc(l.name)}</button>`).join("");
   for (const b of $("lids").querySelectorAll(".tile")) b.onclick = () => setDesign({ ...state.design, lid: b.dataset.lid });
   $("lid-sliders").hidden = d.lid !== "lift";
-  if (d.lid === "lift") sliders($("lid-sliders"), [["lidLip", "Lip depth"], ["clearance", "Gap round the lip and trays"]]);
+  if (d.lid === "lift") sliders($("lid-sliders"), [["lidLip", "Lip depth"]]);
 }
 
 function renderTrays() {
