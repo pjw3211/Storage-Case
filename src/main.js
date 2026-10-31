@@ -1,17 +1,23 @@
 // The app: set the box size, lay out the inside with dividers you can drag,
-// pick a lid, and download each part as an STL ready to print.
+// add lift-out trays that stack inside, pick a lid, and download each part
+// as an STL ready to print.
 import { cad } from "./cad/client.js";
 import { createView } from "./view.js";
-import { DEFAULT_DESIGN, LIMITS, LIDS, TEMPLATES, IN, normalize, gridDividers, moveDivider, addDivider, dividerRange, inner, summary } from "./design.js";
+import { DEFAULT_DESIGN, LIMITS, LIDS, TEMPLATES, IN, MAX_TRAYS, TRAY_HEIGHT, normalize, gridDividers, moveDivider, addDivider, dividerRange,
+  inner, summary, partOf, withPart, addTray, ledgeTop } from "./design.js";
 
 const $ = id => document.getElementById(id);
 const STORE = "storage-case-v1";
 
 // ---- state, kept in this browser -----------------------------------------------
 // A first visit starts with a 3 × 2 grid so there is something to drag.
-let state = { design: { ...DEFAULT_DESIGN, dividers: gridDividers(DEFAULT_DESIGN, 3, 2) }, units: "mm", template: "3x2", open: null };
+// `editing` is "box" or the id of the tray whose dividers you are laying out.
+let state = { design: { ...DEFAULT_DESIGN, dividers: gridDividers(DEFAULT_DESIGN, 3, 2) }, units: "mm", template: "3x2", open: null, editing: "box" };
 try { state = { ...state, ...JSON.parse(localStorage.getItem(STORE) || "{}") }; } catch (e) { /* start fresh */ }
 state.design = normalize(state.design);
+const tray = () => state.design.trays.find(t => t.id === state.editing);
+if (!tray()) state.editing = "box";
+const part = () => partOf(state.design, state.editing);
 const save = () => { try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) { /* private window */ } };
 let selected = null;
 
@@ -28,11 +34,16 @@ for (const b of document.querySelectorAll("[data-units]")) b.onclick = () => {
 // ---- the 3D view ------------------------------------------------------------------
 const view = createView($("view"), {
   onDivider(id, at, done) {
-    if (!done) { state.design = moveDivider(state.design, id, at); view.setDesign(state.design); renderSelected(); return; }
+    if (!done) { state.design = withPart(state.design, state.editing, moveDivider(part(), id, at)); view.setDesign(part()); renderSelected(); return; }
     state.template = null; save(); renderTemplates(); renderSummary();
   },
   onResize(change, done) {
-    if (!done) { setDesign({ ...state.design, ...change }, { quiet: true }); return; }
+    if (!done) {
+      // A tray's only handle is its height.
+      const next = state.editing === "box" ? { ...state.design, ...change } : withPart(state.design, state.editing, { ...part(), ...change });
+      setDesign(next, { quiet: true });
+      return;
+    }
     save(); render(); scheduleBuild(0);
   },
   onSelect(id) { selected = id; renderSelected(); },
@@ -43,27 +54,41 @@ $("reframe").onclick = () => view.frame();
 function setDesign(next, { quiet = false } = {}) {
   const before = state.design;
   state.design = normalize(next, before);
-  if (selected && !state.design.dividers.some(x => x.id === selected)) { selected = null; view.select(null); }
-  view.setDesign(state.design);
-  if (quiet) { renderDims(); renderSummary(); return; }
+  if (!tray()) state.editing = "box";
+  if (selected && !part().dividers.some(x => x.id === selected)) { selected = null; view.select(null); }
+  view.setMode(state.editing === "box" ? "box" : "tray");
+  view.setDesign(part());
+  if (quiet) { renderDims(); renderSummary(); renderTrays(); return; }
   save(); render();
-  const shellChanged = ["width", "depth", "height", "wall", "floor", "radius", "lid", "clearance", "lidLip"].some(k => before[k] !== state.design[k]);
-  if (shellChanged) scheduleBuild();
+  if (shapeKey() !== builtKey) scheduleBuild();
 }
 
+// What the engine's meshes depend on: moving a divider needs no rebuild,
+// since the view draws dividers itself, but the trays shown beside the box do.
+const SHELL = ["width", "depth", "height", "wall", "floor", "divider", "radius", "lid", "clearance", "lidLip"];
+function shapeKey() {
+  const d = state.design;
+  return JSON.stringify([state.editing, SHELL.map(k => d[k]), d.trays.map(t => [t.id, t.height, state.editing === "box" ? t.dividers : 0])]);
+}
+let builtKey = null;
+
 // ---- building with the exact engine -------------------------------------------------
-let timer = null, building = false, again = false, framed = false;
+let timer = null, building = false, again = false, framed = null;
 function setStatus(t, kind = "") { $("status").textContent = t; $("status").className = "chip " + kind; }
 function scheduleBuild(delay = 250) { clearTimeout(timer); timer = setTimeout(build, delay); }
 async function build() {
   if (building) { again = true; return; }
   building = true; again = false;
   setStatus("Building…", "busy");
-  const d = state.design;
+  const d = state.design, target = state.editing, key = shapeKey(), p = part();
   try {
-    const { meshes } = await cad("view", { design: d });
-    view.setMeshes(meshes, d);
-    if (!framed) { framed = true; view.frame(); }
+    const { meshes } = await cad("view", { design: d, target });
+    view.setMeshes(meshes, p);
+    builtKey = key;
+    // Fit the view when the parts on show change (a lid or tray added, or
+    // switching between the box and a tray), not on every rebuild.
+    const layout = target + ":" + meshes.map(m => m.id).join(",");
+    if (layout !== framed) { framed = layout; view.frame(); }
     setStatus("Ready");
     $("dl-stl").disabled = false;
     window.__built = (window.__built || 0) + 1;
@@ -106,26 +131,27 @@ function renderTemplates() {
     const t = TEMPLATES.find(x => x.id === b.dataset.template);
     state.template = t.id;
     selected = null; view.select(null);
-    setDesign({ ...state.design, dividers: gridDividers(state.design, t.cols, t.rows) });
+    setDesign(withPart(state.design, state.editing, { ...part(), dividers: gridDividers(part(), t.cols, t.rows) }));
   };
   $("add-x").onclick = () => add("x");
   $("add-y").onclick = () => add("y");
 }
 
 function add(axis) {
-  const r = addDivider(state.design, axis);
+  const r = addDivider(part(), axis);
   if (!r) { setStatus("No room for another divider that way", "error"); return; }
   state.template = null;
   selected = r.id;
-  setDesign(r.design);
+  setDesign(withPart(state.design, state.editing, r.design));
   view.select(r.id);
 }
 
 function renderSelected() {
-  const div = selected && state.design.dividers.find(x => x.id === selected);
+  const d = part(), div = selected && d.dividers.find(x => x.id === selected);
   $("selected").hidden = !div;
   if (!div) return;
-  const d = state.design, i = inner(d), full = i.h, h = div.height ?? full;
+  // Box dividers stop below the trays and the lid's lip.
+  const full = Math.min(inner(d).h, d.dividerTop - d.floor), h = Math.min(div.height ?? full, full);
   const [lo, hi] = dividerRange(d, div);
   const dirName = div.axis === "x" ? "Front-to-back divider" : "Side-to-side divider";
   const from = div.axis === "x" ? "from the left wall" : "from the front wall";
@@ -144,17 +170,19 @@ function renderSelected() {
         <input type="range" id="sel-h" min="3" max="${Math.floor(full)}" step="1" value="${Math.min(h, Math.floor(full))}"></div>
     </div>
     <div class="row"><button class="btn danger" id="sel-delete" type="button">Delete divider</button></div>`;
-  $("sel-at").oninput = () => { state.design = moveDivider(state.design, div.id, +$("sel-at").value); view.setDesign(state.design); renderSelected(); };
+  $("sel-at").oninput = () => { state.design = withPart(state.design, state.editing, moveDivider(part(), div.id, +$("sel-at").value)); view.setDesign(part()); renderSelected(); };
   $("sel-at").onchange = () => { state.template = null; save(); renderTemplates(); };
   $("sel-h").oninput = () => { const v = +$("sel-h").value; $("o-sel-h").textContent = v >= Math.floor(full) ? "Full height" : text(v); };
   $("sel-h").onchange = () => {
     const v = +$("sel-h").value;
-    setDesign({ ...state.design, dividers: state.design.dividers.map(x => x.id === div.id ? (v >= Math.floor(full) ? { id: x.id, axis: x.axis, at: x.at } : { ...x, height: v }) : x) });
+    const p = part();
+    setDesign(withPart(state.design, state.editing, { ...p, dividers: p.dividers.map(x => x.id === div.id ? (v >= Math.floor(full) ? { id: x.id, axis: x.axis, at: x.at } : { ...x, height: v }) : x) }));
   };
   $("sel-delete").onclick = () => {
     selected = null; view.select(null);
     state.template = null;
-    setDesign({ ...state.design, dividers: state.design.dividers.filter(x => x.id !== div.id) });
+    const p = part();
+    setDesign(withPart(state.design, state.editing, { ...p, dividers: p.dividers.filter(x => x.id !== div.id) }));
   };
 }
 
@@ -180,9 +208,46 @@ function renderLid() {
   if (d.lid === "lift") sliders($("lid-sliders"), [["lidLip", "Lip depth"], ["clearance", "Gap around the lip"]]);
 }
 
+// Which part you are laying out (the box or a tray), adding and removing
+// trays, and the height of the tray being edited.
+function edit(target) {
+  if (state.editing === target) return;
+  state.editing = target; state.template = null;
+  selected = null; view.select(null);
+  setDesign(state.design);
+}
+
+function renderTrays() {
+  const d = state.design, t = tray();
+  const tabs = [["box", "Box"], ...d.trays.map((x, k) => [x.id, `Tray ${k + 1}`])];
+  $("targets").innerHTML = tabs.map(([id, name]) => `<button type="button" data-edit="${id}" aria-pressed="${state.editing === id}">${name}</button>`).join("")
+    + (d.trays.length < MAX_TRAYS ? `<button type="button" id="add-tray">+ Tray</button>` : "");
+  for (const b of $("targets").querySelectorAll("[data-edit]")) b.onclick = () => edit(b.dataset.edit);
+  if ($("add-tray")) $("add-tray").onclick = () => {
+    const r = addTray(state.design);
+    if (!r) { setStatus("No room for another tray. Make the box taller or a tray shorter.", "error"); return; }
+    state.editing = r.id; state.template = null; selected = null; view.select(null);
+    setDesign(r.design);
+  };
+  $("tray-controls").hidden = !t;
+  if (!t) return;
+  const k = d.trays.indexOf(t);
+  const max = Math.max(t.height, Math.min(TRAY_HEIGHT[1], Math.floor(t.height + ledgeTop(d) - d.floor)));
+  $("tray-controls").innerHTML = `<div class="sliders"><div class="sl"><label for="tray-h">Tray ${k + 1} height</label><output id="o-tray-h">${text(t.height)}</output>
+      <input type="range" id="tray-h" min="${Math.max(TRAY_HEIGHT[0], d.floor + 5)}" max="${max}" step="1" value="${t.height}"></div></div>
+    <p class="hint">Trays stack from the top of the box down and sit on a ledge round the inside walls. The box's own dividers stop below them.</p>
+    <div class="row"><button class="btn danger" id="tray-remove" type="button">Remove tray ${k + 1}</button></div>`;
+  $("tray-h").oninput = () => { $("o-tray-h").textContent = text(+$("tray-h").value); };
+  $("tray-h").onchange = () => setDesign(withPart(state.design, t.id, { ...part(), height: +$("tray-h").value }));
+  $("tray-remove").onclick = () => {
+    state.editing = "box"; selected = null; view.select(null);
+    setDesign({ ...state.design, trays: state.design.trays.filter(x => x.id !== t.id) });
+  };
+}
+
 function render() {
   for (const x of document.querySelectorAll("[data-units]")) x.setAttribute("aria-pressed", String(x.dataset.units === state.units));
-  renderSummary(); renderDims(); renderTemplates(); renderWalls(); renderLid();
+  renderSummary(); renderDims(); renderTrays(); renderTemplates(); renderWalls(); renderLid();
   $("selected").dataset.id = ""; renderSelected();
 }
 
@@ -214,8 +279,9 @@ $("dl-stl").onclick = async () => {
 };
 
 // ---- start --------------------------------------------------------------------------
-view.setDesign(state.design);
+view.setMode(state.editing === "box" ? "box" : "tray");
+view.setDesign(part());
 render();
 build();
-window.__app = { get design() { return state.design; }, view };
+window.__app = { get design() { return state.design; }, get part() { return part(); }, view };
 window.__ready = true;

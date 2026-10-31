@@ -11,8 +11,9 @@ Design a 3D-printable storage case on your phone, without CAD. Set the size, pic
 1. **Size.** Type the width, depth and height, or drag the round orange handles on the box.
 2. **Inside.** Pick a layout (one pocket up to a 4 × 3 grid), add dividers either way, and drag any divider to move it. Tap a divider to set its exact position, lower it for finger access, or delete it.
 3. **Walls.** Sliders for wall, floor and divider thickness and corner radius.
-4. **Lid.** None, or a lift-off lid with a lip that sits inside the walls. The lid shows beside the box, the way up it prints.
-5. **Download.** One STL per part, each laid flat on the bed.
+4. **Trays.** Add up to three lift-out trays that stack inside the box, each with its own height and dividers. Tap Box or Tray 1, 2, 3 to choose which one you're laying out. The bottom tray sits on a ledge round the inside walls, and the box's own dividers stop below the trays.
+5. **Lid.** None, or a lift-off lid with a lip that sits inside the walls; dividers and trays stop below the lip. The lid and trays show beside the box, the way up they print.
+6. **Download.** One STL per part (box, lid, each tray), each laid flat on the bed.
 
 Units switch between millimetres and inches at the top right. Your design is saved in the browser.
 
@@ -20,7 +21,7 @@ The print rules (wall 0.8–5 mm, pockets at least 5 mm wide, sizes up to 300 ×
 
 ## Coming next
 
-Mounting hardware presets and custom holes, stand-in objects to check fit, stackable trays, 3MF download and printer bed checks. The full plan is in the [version 1 spec](https://claude.ai/artifact/Tf282aTvgj7t2fVYiMJ5nk).
+Mounting hardware presets and custom holes, stand-in objects to check fit, 3MF download and printer bed checks. The full plan is in the [version 1 spec](https://claude.ai/artifact/Tf282aTvgj7t2fVYiMJ5nk).
 
 ## One-time setup (owner only)
 
