@@ -4,7 +4,7 @@
 //
 // CAD frame: millimetres, Z up, X across the width, front faces -Y. The box
 // is centred on X = Y = 0 with its floor on Z = 0.
-import { inner, ends, boxPart, trayPart, ledgeTop, LEDGE } from "../design.js";
+import { inner, ends, boxPart, trayPart } from "../design.js";
 
 // A rounded rectangle centred on the origin, extruded up from z0.
 function slab(R, w, d, r, z0, h) {
@@ -12,20 +12,10 @@ function slab(R, w, d, r, z0, h) {
   return sketch.sketchOnPlane("XY", z0).extrude(h);
 }
 
-// The step round the inside walls that the bottom tray sits on.
-function ledge(R, d) {
-  const i = inner(d), top = ledgeTop(d), r = Math.max(0, d.radius - d.wall);
-  if (!(d.trays || []).length || top - d.floor < 0.1) return null;
-  return slab(R, i.w + 1, i.d + 1, r > 0 ? r + 0.5 : 0, d.floor - 0.01, top - d.floor + 0.01)
-    .cut(slab(R, i.w - 2 * LEDGE, i.d - 2 * LEDGE, Math.max(0, r - LEDGE), d.floor - 1, top - d.floor + 2));
-}
-
-// The cavity inside the walls, less the tray ledge.
+// The cavity inside the walls.
 function cavity(R, d) {
   const i = inner(d);
-  let c = slab(R, i.w, i.d, Math.max(0, d.radius - d.wall), d.floor, d.height);
-  const l = ledge(R, d);
-  return l ? c.cut(l) : c;
+  return slab(R, i.w, i.d, Math.max(0, d.radius - d.wall), d.floor, d.height);
 }
 
 // The box's (or a tray's) walls and floor with no dividers: what the 3D
@@ -35,8 +25,7 @@ export function buildShell(R, d) {
 }
 
 // Divider boxes in the CAD frame, for the solid and for the 3D view. `d` is
-// the box (boxPart) or a tray (trayPart): box dividers stop below the trays
-// and the lid's lip.
+// the box (boxPart) or a tray (trayPart): box dividers stop below the lid's lip.
 export function dividerBoxes(d) {
   const i = inner(d), t = d.divider, cap = d.dividerTop ?? d.height;
   return d.dividers.map(x => {

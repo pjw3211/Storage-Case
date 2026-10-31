@@ -1,7 +1,9 @@
 // The exact solids: the box and lid come out the size asked for, dividers
 // join the walls and floor, and the lid's lip fits inside the box.
 import { describe, it, expect, beforeAll } from "vitest";
-import { DEFAULT_DESIGN, TEMPLATES, LEDGE, normalize, gridDividers, inner, trayPart, boxPart, withPart, ledgeTop, stackTop } from "../src/design.js";
+import { DEFAULT_DESIGN, normalize, gridDividers, inner, trayPart, boxPart, withPart, stackTop } from "../src/design.js";
+
+const LAYOUTS = [[1, 1], [2, 1], [2, 2], [3, 2], [4, 3]];
 import { buildCase, buildShell, bounds, dividerBoxes } from "../src/cad/case.js";
 import { partSTL } from "../src/cad/exports.js";
 import { loadReplicad } from "./oc-node.js";
@@ -16,9 +18,9 @@ const design = (extra = {}, cols = 1, rows = 1) => {
 const close = (a, b) => a.forEach((v, k) => expect(v).toBeCloseTo(b[k], 1));
 
 describe("the box", () => {
-  for (const t of TEMPLATES)
-    it(`${t.name} is one solid of the right size`, () => {
-      const d = design({}, t.cols, t.rows);
+  for (const [cols, rows] of LAYOUTS)
+    it(`a ${cols} × ${rows} grid is one solid of the right size`, () => {
+      const d = design({}, cols, rows);
       const [box] = buildCase(R, d);
       const b = bounds(box.solid);
       close(b.min, [-d.width / 2, -d.depth / 2, 0]);
@@ -83,33 +85,19 @@ describe("STL", () => {
 
 describe("trays", () => {
   const withTrays = () => {
-    let d = design({ height: 60, lid: "lift" }, 3, 2);
-    d = normalize({ ...d, trays: [{ id: "a", height: 15 }, { id: "b", height: 12 }] });
+    let d = design({ height: 60, lid: "lift" });
+    d = normalize({ ...d, trays: [{ id: "a", x: 0.25, y: 0.25, w: 58, d: 76.3, height: 15 }, { id: "b", x: 58.55, y: 0.25, w: 40, d: 40, height: 12 }] });
     const t = trayPart(d, d.trays[0]);
     return normalize(withPart(d, "a", { ...t, dividers: gridDividers(t, 2, 1) }));
   };
 
-  it("each tray is its own part, sized to slide inside the walls", () => {
-    const d = withTrays(), parts = buildCase(R, d), i = inner(d);
+  it("each tray is its own part, the size asked for", () => {
+    const d = withTrays(), parts = buildCase(R, d);
     expect(parts.map(p => p.id)).toEqual(["box", "lid", "tray-1", "tray-2"]);
-    for (const [k, h] of [[2, 15], [3, 12]]) {
-      const b = bounds(parts[k].solid);
-      close(b.max, [i.w / 2 - d.clearance, i.d / 2 - d.clearance, h]);
-    }
+    close(bounds(parts[2].solid).max, [29, 38.15, 15]);
+    close(bounds(parts[3].solid).max, [20, 20, 12]);
     // Tray 1 has its divider, tray 2 is one open pocket.
     expect(R.measureVolume(parts[2].solid)).toBeGreaterThan(R.measureVolume(buildShell(R, trayPart(d, d.trays[0]))) + 100);
-  });
-
-  it("the box has a ledge for the trays, and its dividers stop below it", () => {
-    const d = withTrays(), box = buildCase(R, d)[0].solid, top = ledgeTop(d), i = inner(d);
-    expect(top).toBeCloseTo(60 - 5 - 0.5 - 27);
-    // A thin slice just below the ledge top holds the ledge; one just above it, only the walls.
-    const slice = z => R.measureVolume(box.intersect(R.makeBaseBox(200, 200, 0.5).translate([0, 0, z])));
-    const walls = slice(top + 1);
-    expect(slice(top - 1)).toBeGreaterThan(walls * 1.5);
-    // Above the ledge nothing crosses the inside: the trays have the space to themselves.
-    const middle = R.makeBaseBox(i.w - 2 * LEDGE - 1, i.d - 2 * LEDGE - 1, stackTop(d) - top - 0.2).translate([0, 0, top + 0.1]);
-    expect(R.measureVolume(box.intersect(middle))).toBeCloseTo(0, 1);
   });
 
   it("dividers stop below the lid's lip", () => {

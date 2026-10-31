@@ -2,7 +2,7 @@
 // for a pocket either side, and resizing keeps a grid even.
 import { describe, it, expect } from "vitest";
 import { DEFAULT_DESIGN, LIMITS, MIN_POCKET, normalize, gridDividers, moveDivider, addDivider, pockets, inner, summary,
-  stackTop, ledgeTop, boxPart, trayPart, partOf, withPart, addTray, ends, placeDivider, setDividerEnd, turnDivider, fullLength } from "../src/design.js";
+  stackTop, boxPart, trayPart, partOf, withPart, addTray, placeTray, resizeTray, fillTray, trayZ, trayTouches, problems, ends, placeDivider, setDividerEnd, turnDivider, fullLength } from "../src/design.js";
 
 const base = (extra = {}) => normalize({ ...DEFAULT_DESIGN, ...extra });
 
@@ -69,41 +69,93 @@ describe("dividers", () => {
   });
 });
 
-describe("lid and trays", () => {
+describe("the lid", () => {
   it("leaves room for the lid's lip above the dividers", () => {
     const d = base({ lid: "lift", lidLip: 6, clearance: 0.25 });
     expect(stackTop(d)).toBeCloseTo(40 - 6 - 0.5);
     expect(boxPart(d).dividerTop).toBeCloseTo(stackTop(d));
     expect(boxPart(base()).dividerTop).toBe(40);
   });
+});
 
-  it("adds trays on top of each other, up to three, while there is room", () => {
-    let d = base({ height: 80 });
-    const ids = [];
-    for (let k = 0; k < 3; k++) { const r = addTray(d); expect(r).not.toBeNull(); d = normalize(r.design); ids.push(r.id); }
-    expect(d.trays.map(t => t.id)).toEqual(ids);
-    expect(addTray(d)).toBeNull();
-    expect(ledgeTop(d)).toBeCloseTo(80 - d.trays.reduce((a, t) => a + t.height, 0));
-    expect(boxPart(d).dividerTop).toBeCloseTo(ledgeTop(d));
+describe("trays", () => {
+  // 120 × 80 box: 116.8 × 76.8 inside; trays keep 0.25 mm from the walls and each other.
+  const c = 0.25;
+  const withTrays = (trays, extra = {}) => normalize({ ...base({ height: 60, ...extra }), trays });
+
+  it("a new tray fills half the width, in the first free corner", () => {
+    let d = base({ height: 60 });
+    const a = addTray(d); d = normalize(a.design);
+    expect(d.trays[0]).toMatchObject({ x: c, y: c, w: 58.02, d: 76.3, height: 20 });
+    const b = addTray(d); d = normalize(b.design);
+    expect(d.trays[1].x).toBeCloseTo(116.8 - c - 58.02);
+    expect(trayTouches(d, d.trays[0])).toBeGreaterThanOrEqual(2);
+    // The third has no free corner, so it stacks on top.
+    d = normalize(addTray(d).design);
+    expect(trayZ(d, d.trays[2])).toBeCloseTo(d.floor + 20);
   });
 
-  it("shortens or drops trays that no longer fit", () => {
-    let d = normalize({ ...base({ height: 80 }), trays: [{ id: "a", height: 40 }, { id: "b", height: 40 }] });
-    expect(d.trays.map(t => t.height)).toEqual([40, 38]); // 80 less the 1.2 mm floor, rounded down
+  it("while dragging it snaps to walls and other trays nearby", () => {
+    let d = withTrays([{ id: "a", x: c, y: c, w: 40, d: 30 }, { id: "b", x: 70, y: 40, w: 30, d: 30 }]);
+    d = placeTray(d, "b", 43, 20); // its left side comes near tray a's right side (40.5)
+    expect(d.trays[1].x).toBeCloseTo(40.5);
+    expect(d.trays[1].y).toBe(20);
+  });
+
+  it("when dropped it locks where it touches at least two sides", () => {
+    let d = withTrays([{ id: "a", x: 30, y: 20, w: 40, d: 30 }]);
+    d = placeTray(d, "a", 30, 20, true);
+    expect(trayTouches(d, d.trays[0])).toBeGreaterThanOrEqual(2);
+    expect(d.trays[0]).toMatchObject({ x: c, y: c }); // the nearest corner
+    // Between two walls counts too: a full-width tray only needs its depth placed.
+    d = withTrays([{ id: "a", x: c, y: 20, w: 116.3, d: 30 }]);
+    d = placeTray(d, "a", c, 20, true);
+    expect(d.trays[0].y).toBe(20);
+  });
+
+  it("dropped onto another tray it stacks on top", () => {
+    let d = withTrays([{ id: "a", x: c, y: c, w: 50, d: 50, height: 15 }, { id: "b", x: 66, y: c, w: 40, d: 40, height: 15 }]);
+    d = placeTray(d, "b", c, c, true);
+    expect(d.trays.map(t => t.id)).toEqual(["a", "b"]);
+    expect(trayZ(d, d.trays[1])).toBeCloseTo(d.floor + 15);
+  });
+
+  it("trays stay below the lid's lip, and are dropped when there's no room", () => {
+    let d = withTrays([{ id: "a", height: 40 }, { id: "b", height: 40 }], { lid: "lift" });
+    // Both fill the inside, so b sits on a: 60 tall less the lip and gaps leaves 54.5 - 1.2 - 40.
+    expect(d.trays.map(t => t.height)).toEqual([40, 13]);
     d = normalize({ ...d, height: 45 }, d);
     expect(d.trays.map(t => t.id)).toEqual(["a"]);
-    expect(ledgeTop(d)).toBeGreaterThanOrEqual(d.floor);
   });
 
-  it("a tray is a smaller box with its own dividers", () => {
-    let d = normalize({ ...base(), trays: [{ id: "a", height: 15 }] });
-    const t = trayPart(d, d.trays[0]), i = inner(d);
-    expect(t.width).toBeCloseTo(i.w - 2 * d.clearance);
-    expect(t.depth).toBeCloseTo(i.d - 2 * d.clearance);
+  it("a tray keeps its place and size as a share of the inside when the box grows", () => {
+    let d = withTrays([{ id: "a", x: c, y: c, w: 58, d: 76.3 }]);
+    const big = normalize({ ...d, width: 220 }, d);
+    expect(big.trays[0].w).toBeCloseTo((216.8 - 2 * c) * 58 / 116.3, 0);
+    expect(big.trays[0].x).toBeCloseTo(c);
+  });
+
+  it("resizing keeps a tray against the far wall it was touching", () => {
+    let d = withTrays([{ id: "a", x: 116.8 - c - 40, y: c, w: 40, d: 30 }]);
+    d = resizeTray(d, "a", { w: 30 });
+    expect(d.trays[0].x + d.trays[0].w).toBeCloseTo(116.8 - c);
+    expect(fillTray(d, "a", "y").trays[0]).toMatchObject({ y: c, d: 76.3 });
+  });
+
+  it("a tray is a box of its own with its own dividers", () => {
+    let d = withTrays([{ id: "a", x: c, y: c, w: 58, d: 76.3 }]);
+    const t = trayPart(d, d.trays[0]);
+    expect([t.width, t.depth]).toEqual([58, 76.3]);
     d = normalize(withPart(d, "a", { ...t, dividers: gridDividers(t, 2, 2) }));
     expect(pockets(partOf(d, "a"))).toHaveLength(4);
     expect(d.dividers).toHaveLength(0);
-    expect(summary(d)).toBe("120 × 80 × 40 mm, 1 pocket, 1 tray");
+    expect(summary(d)).toBe("120 × 80 × 60 mm, 1 pocket, 1 tray");
+  });
+
+  it("warns when a tray on the floor sits on a box divider", () => {
+    const d = normalize({ ...withTrays([{ id: "a", x: c, y: c, w: 58, d: 76.3 }]), dividers: [{ id: "x", axis: "x", at: 30 }] });
+    expect(problems(d)).toEqual(["Tray 1 sits on a box divider. Move one of them."]);
+    expect(problems(normalize({ ...d, dividers: [{ id: "x", axis: "x", at: 80 }] }))).toEqual([]);
   });
 });
 

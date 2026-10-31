@@ -1,21 +1,22 @@
-// The 3D view: the case as the engine built it, dividers you can drag, and
-// round handles that resize the box. Touch and mouse both work: dragging a
-// divider or handle moves it, dragging anywhere else turns the view, and
-// pinching or the mouse wheel zooms.
+// The 3D view: every part of the case as its own model, like an assembly in
+// a CAD program. Tap a part to pick it. Drag a tray to move it around inside
+// the box, drag a divider to move it, drag a picked divider's end dots to
+// make it longer or shorter, and drag the round handles to resize the box.
+// Dragging anywhere else turns the view; pinching or the mouse wheel zooms.
 //
 // Inside the case group everything is in the CAD frame (millimetres, Z up,
 // the box centred with its floor on Z = 0). The scene is in metres, Y up.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { inner, ends } from "./design.js";
+import { inner, ends, boxPart, trayPart, trayZ } from "./design.js";
 import { dividerBoxes } from "./cad/case.js";
 
-const PLASTIC = 0x4f86c6, PICKED = 0xe8743b, HANDLE = 0xe8743b;
+const PLASTIC = 0x4f86c6, TRAY = 0x7fb069, PICKED = 0xe8743b, HANDLE = 0xe8743b;
 const HANDLE_GAP = 10; // mm between a wall and its handle
-const GAP = 20; // mm between the parts laid out side by side
+const GAP = 20; // mm between the box and the lid laid beside it
 
-export function createView(host, { onDivider, onDividerEnd, onResize, onSelect }) {
+export function createView(host, { onSelect, onDivider, onDividerEnd, onTray, onResize }) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -38,84 +39,82 @@ export function createView(host, { onDivider, onDividerEnd, onResize, onSelect }
   group.rotation.x = -Math.PI / 2;
   group.scale.setScalar(0.001);
   scene.add(group);
-  const shellHolder = new THREE.Group(), dividerHolder = new THREE.Group(), handleHolder = new THREE.Group(), besideHolder = new THREE.Group();
-  group.add(shellHolder, dividerHolder, handleHolder, besideHolder);
+  const boxHolder = new THREE.Group(), boxDividers = new THREE.Group(), handleHolder = new THREE.Group(), lidHolder = new THREE.Group(), trayHolder = new THREE.Group();
+  group.add(boxHolder, boxDividers, handleHolder, lidHolder, trayHolder);
 
-  const plastic = new THREE.MeshStandardMaterial({ color: PLASTIC, roughness: 0.55 });
-  const picked = new THREE.MeshStandardMaterial({ color: PICKED, roughness: 0.5 });
+  const mat = color => new THREE.MeshStandardMaterial({ color, roughness: 0.55 });
+  const plastic = mat(PLASTIC), trayMat = mat(TRAY), picked = mat(PICKED);
+  const pickedPart = new THREE.MeshStandardMaterial({ color: PICKED, roughness: 0.55, transparent: true, opacity: 0.92 });
   const handleMat = new THREE.MeshStandardMaterial({ color: HANDLE, roughness: 0.4 });
   const hitMat = new THREE.MeshBasicMaterial({ visible: false });
 
-  // `design` is the part being edited: the box, or a tray as a box of its own
-  // (see partOf in design.js). `mode` is "box" or "tray": a tray only has a
-  // height handle.
-  let design = null, built = null, selected = null, drag = null, mode = "box";
+  // `selected` is { kind: "box" | "lid" | "tray" | "divider", id, parent }, a
+  // divider's parent being "box" or its tray's id.
+  let design = null, selected = null, drag = null;
+  const shells = new Map(); // "box", "lid", "tray:<id>" → { geometry, size } from the engine
   let corner = [1, -1], heightHandle = [];
 
-  // ---- the parts the engine built -------------------------------------------
-  function meshFrom(m) {
+  // ---- the parts the engine built ---------------------------------------------
+  function geometryFrom(m) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(m.vertices, 3));
     geo.setAttribute("normal", new THREE.BufferAttribute(m.normals, 3));
     geo.setIndex(new THREE.BufferAttribute(m.triangles, 1));
-    const mesh = new THREE.Mesh(geo, plastic);
+    geo.computeBoundingBox();
+    return geo;
+  }
+  const clear = g => { for (const o of [...g.children]) { g.remove(o); o.traverse(x => { if (!x.userData.keep) x.geometry?.dispose(); }); } };
+
+  /** Show the meshes the engine built. */
+  function setMeshes(meshes) {
+    for (const s of shells.values()) s.geometry.dispose();
+    shells.clear();
+    for (const m of meshes) {
+      const geometry = geometryFrom(m), b = geometry.boundingBox;
+      shells.set(m.id, { geometry, size: [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z] });
+    }
+    if (design) draw();
+  }
+
+  // A shell from the engine, stretched to the size asked for while the
+  // engine catches up with a resize.
+  function shellMesh(key, size, material, userData) {
+    const s = shells.get(key);
+    let mesh;
+    if (s) {
+      mesh = new THREE.Mesh(s.geometry, material);
+      mesh.userData.keep = true; // the geometry belongs to `shells`
+      mesh.scale.set(size[0] / s.size[0], size[1] / s.size[1], size[2] / s.size[2]);
+    } else {
+      // Not built yet: a plain block where it will go.
+      mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), material);
+      mesh.position.z = size[2] / 2;
+    }
     mesh.castShadow = mesh.receiveShadow = true;
+    Object.assign(mesh.userData, userData);
     return mesh;
   }
-  const clear = g => { for (const o of [...g.children]) { g.remove(o); o.traverse(x => x.geometry?.dispose()); } };
 
-  /** Show the meshes the engine built for the part `forPart`: its shell, then the other parts to lay out beside it. */
-  function setMeshes(meshes, forPart) {
-    clear(shellHolder); clear(besideHolder);
-    built = forPart;
-    for (const m of meshes) {
-      const mesh = meshFrom(m);
-      if (m.id === "shell") { shellHolder.add(mesh); continue; }
-      mesh.geometry.computeBoundingBox();
-      mesh.userData.width = mesh.geometry.boundingBox.max.x - mesh.geometry.boundingBox.min.x;
-      besideHolder.add(mesh);
-    }
-    placeShell();
-  }
+  const isPicked = (kind, id) => !!selected && selected.kind === kind && selected.id === id;
 
-  // While a handle is being dragged the old shell stretches to the new size
-  // until the engine rebuilds it.
-  function placeShell() {
-    if (!built || !design) return;
-    shellHolder.scale.set(design.width / built.width, design.depth / built.depth, design.height / built.height);
-    // The lid and trays sit beside and behind the box, two to a row, the
-    // way up they print.
-    besideHolder.children.forEach((m, k) => {
-      const cell = k + 1;
-      m.position.set((cell % 2) * (design.width + GAP), Math.floor(cell / 2) * (design.depth + GAP), 0);
-    });
-  }
-  // The floor space everything on show takes up: [x0, x1, y0, y1] in mm.
-  function extent() {
-    const n = besideHolder.children.length + 1, cols = Math.min(2, n), rows = Math.ceil(n / 2);
-    return [-design.width / 2, -design.width / 2 + cols * (design.width + GAP) - GAP, -design.depth / 2, -design.depth / 2 + rows * (design.depth + GAP) - GAP];
-  }
-
-  // ---- dividers and handles, drawn from the design ----------------------------
-  function setDesign(d) {
-    design = d;
-    clear(dividerHolder); clear(handleHolder);
-    const r = Math.max(3.5, Math.max(d.width, d.depth, d.height) * 0.035);
-    for (const b of dividerBoxes(d)) {
-      const axis = d.dividers.find(x => x.id === b.id).axis;
+  // Dividers of one part (the box or a tray), in that part's own frame.
+  function drawDividers(holder, part, parent, r) {
+    for (const b of dividerBoxes(part)) {
+      const axis = part.dividers.find(x => x.id === b.id).axis;
       const size = b.max.map((v, k) => v - b.min[k]);
-      const z0 = d.floor - 0.01, h = b.max[2] - z0;
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], h), b.id === selected ? picked : plastic);
+      const z0 = part.floor - 0.01, h = b.max[2] - z0;
+      const on = isPicked("divider", b.id);
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], h), on ? picked : parent === "box" ? plastic : trayMat);
       mesh.position.set((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, z0 + h / 2);
       mesh.castShadow = mesh.receiveShadow = true;
       // A wider invisible box makes thin dividers easy to grab with a finger.
-      const grab = Math.max(8, Math.min(d.width, d.depth) * 0.08);
+      const grab = Math.max(8, Math.min(part.width, part.depth) * 0.08);
       const hit = new THREE.Mesh(new THREE.BoxGeometry(axis === "x" ? Math.max(size[0], grab) : size[0], axis === "y" ? Math.max(size[1], grab) : size[1], h + 4), hitMat);
       hit.position.copy(mesh.position);
-      hit.userData = { divider: b.id };
-      dividerHolder.add(mesh, hit);
+      hit.userData = { pick: { kind: "divider", id: b.id, parent } };
+      holder.add(mesh, hit);
       // The picked divider gets a handle on each end to make it longer or shorter.
-      if (b.id === selected) {
+      if (on) {
         const k = axis === "x" ? 1 : 0;
         for (const [which, v] of [["from", b.min[k]], ["to", b.max[k]]]) {
           const p = [mesh.position.x, mesh.position.y, b.max[2] + r * 0.6];
@@ -124,11 +123,41 @@ export function createView(host, { onDivider, onDividerEnd, onResize, onSelect }
           ball.position.set(...p);
           const grabEnd = new THREE.Mesh(new THREE.SphereGeometry(r * 2, 12, 8), hitMat);
           grabEnd.position.set(...p);
-          grabEnd.userData = { end: which, divider: b.id };
-          dividerHolder.add(ball, grabEnd);
+          grabEnd.userData = { end: which, pick: { kind: "divider", id: b.id, parent } };
+          holder.add(ball, grabEnd);
         }
       }
     }
+  }
+
+  /** Where a tray sits: its middle in the case frame, and the height of its bottom. */
+  function trayPlace(d, t) {
+    const i = inner(d);
+    return [-i.w / 2 + t.x + t.w / 2, -i.d / 2 + t.y + t.d / 2, trayZ(d, t)];
+  }
+
+  function draw() {
+    const d = design;
+    for (const g of [boxHolder, boxDividers, handleHolder, lidHolder, trayHolder]) clear(g);
+    const r = Math.max(3.5, Math.max(d.width, d.depth, d.height) * 0.035);
+
+    boxHolder.add(shellMesh("box", [d.width, d.depth, d.height], isPicked("box", "box") ? pickedPart : plastic, { pick: { kind: "box", id: "box" } }));
+    drawDividers(boxDividers, boxPart(d), "box", r);
+
+    if (d.lid === "lift") {
+      // The lid sits beside the box, the way up it prints.
+      lidHolder.add(shellMesh("lid", [d.width, d.depth, d.floor + d.lidLip], isPicked("lid", "lid") ? pickedPart : plastic, { pick: { kind: "lid", id: "lid" } }));
+      lidHolder.position.set(d.width + GAP, 0, 0);
+    }
+
+    for (const t of d.trays) {
+      const g = new THREE.Group();
+      g.position.set(...trayPlace(d, t));
+      g.add(shellMesh("tray:" + t.id, [t.w, t.d, t.height], isPicked("tray", t.id) ? pickedPart : trayMat, { pick: { kind: "tray", id: t.id } }));
+      drawDividers(g, trayPart(d, t), t.id, r * 0.8);
+      trayHolder.add(g);
+    }
+
     const handle = (kind, x, y, z) => {
       const ball = new THREE.Mesh(new THREE.SphereGeometry(r, 24, 16), handleMat);
       ball.position.set(x, y, z);
@@ -138,18 +167,18 @@ export function createView(host, { onDivider, onDividerEnd, onResize, onSelect }
       hit.userData = { handle: kind };
       handleHolder.add(ball, hit);
     };
-    if (mode === "box") {
-      handle("width", d.width / 2 + HANDLE_GAP, 0, d.height / 2);
-      handle("depth", 0, -d.depth / 2 - HANDLE_GAP, d.height / 2);
-    }
+    handle("width", d.width / 2 + HANDLE_GAP, 0, d.height / 2);
+    handle("depth", 0, -d.depth / 2 - HANDLE_GAP, d.height / 2);
     handle("height", 0, 0, d.height + HANDLE_GAP);
     heightHandle = handleHolder.children.slice(-2);
     placeCorner();
-    placeShell();
   }
 
+  function setDesign(d) { design = d; draw(); }
+  function select(sel) { selected = sel; if (design) draw(); }
+
   // The height handle sits on the back corner, away from the camera, so it
-  // never covers the pockets.
+  // never covers the inside.
   function placeCorner() {
     if (!design || !heightHandle.length) return;
     if (!(drag && drag.handle === "height")) {
@@ -160,27 +189,24 @@ export function createView(host, { onDivider, onDividerEnd, onResize, onSelect }
     for (const o of heightHandle) o.position.set(corner[0] * design.width / 2, corner[1] * design.depth / 2, design.height + HANDLE_GAP);
   }
 
-  function select(id) { selected = id; if (design) setDesign(design); }
-  function setMode(m) { mode = m; }
-
   // ---- framing ------------------------------------------------------------------
   function frame() {
     if (!design) return;
-    // Fit a sphere round the box (and the parts beside it) into the view.
-    const [x0, x1, y0, y1] = extent();
-    const w = (x1 - x0) * 0.001, dep = (y1 - y0) * 0.001, h = design.height * 0.001;
+    // Fit a sphere round the box (and the lid beside it) into the view.
+    const lidW = design.lid === "lift" ? design.width + GAP : 0;
+    const x0 = -design.width / 2, x1 = design.width / 2 + lidW;
+    const w = (x1 - x0) * 0.001, dep = design.depth * 0.001, h = design.height * 0.001;
     const radius = Math.hypot(w, dep, h) / 2;
     const fov = THREE.MathUtils.degToRad(camera.fov) / 2;
     const fit = Math.min(Math.tan(fov), Math.tan(fov) * camera.aspect);
     const dist = radius / Math.sin(Math.atan(fit)) * 1.05;
-    // The case frame's +Y (behind the box) is the scene's -Z.
-    controls.target.set((x0 + x1) / 2 * 0.001, h / 2, -(y0 + y1) / 2 * 0.001);
+    controls.target.set((x0 + x1) / 2 * 0.001, h / 2, 0);
     const dir = new THREE.Vector3(0.35, 0.8, 1).normalize();
     camera.position.copy(controls.target).addScaledVector(dir, dist);
     controls.update();
   }
 
-  // ---- pointer: drag dividers and handles, otherwise turn the view ----------------
+  // ---- pointer: pick and drag parts, otherwise turn the view -------------------
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
   const canvas = renderer.domElement;
   function hitAt(e) {
@@ -196,13 +222,32 @@ export function createView(host, { onDivider, onDividerEnd, onResize, onSelect }
     const hit = ray.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(n, p), new THREE.Vector3());
     return hit && group.worldToLocal(hit);
   }
+  const UP = new THREE.Vector3(0, 0, 1);
 
-  // The pointer on the top of the walls, measured from the inside front-left corner.
-  function insidePoint() {
-    const local = onPlane(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, design.height));
-    if (!local) return null;
+  // A part's inside front-left corner and top, in the case frame: the frame
+  // its dividers are laid out in.
+  function partFrame(parent) {
     const i = inner(design);
-    return { u: local.x + i.w / 2, v: local.y + i.d / 2 };
+    if (parent === "box") return { x: -i.w / 2, y: -i.d / 2, top: design.height, part: boxPart(design) };
+    const t = design.trays.find(x => x.id === parent);
+    if (!t) return null;
+    const [cx, cy, z] = trayPlace(design, t), part = trayPart(design, t), pi = inner(part);
+    return { x: cx - pi.w / 2, y: cy - pi.d / 2, top: z + t.height, part };
+  }
+
+  // Everything you can grab; handles and end dots win over what they sit on.
+  function grabbable() {
+    const out = [];
+    group.traverse(o => { if (o.userData.pick || o.userData.handle) out.push(o); });
+    return out;
+  }
+  function pickAt(e) {
+    hitAt(e);
+    const hits = ray.intersectObjects(grabbable(), false);
+    // Handles and end dots first, then what sits inside the box (trays and
+    // dividers), so a part behind the box's wall can still be grabbed.
+    const inside = h => ["tray", "divider"].includes(h.object.userData.pick?.kind);
+    return (hits.find(h => h.object.userData.end || h.object.userData.handle) || hits.find(inside) || hits[0])?.object || null;
   }
 
   let down = null, touches = 0;
@@ -213,40 +258,54 @@ export function createView(host, { onDivider, onDividerEnd, onResize, onSelect }
     if (touches > 1) { if (drag) endDrag(false); return; }
     down = { x: e.clientX, y: e.clientY };
     if (!design) return;
-    hitAt(e);
-    // Ends and handles win over the divider they sit on.
-    const hits = ray.intersectObjects([...handleHolder.children, ...dividerHolder.children].filter(o => o.userData.handle || o.userData.divider));
-    const hit = (hits.find(h => h.object.userData.end || h.object.userData.handle) || hits[0])?.object;
+    const hit = pickAt(e);
     if (!hit) return;
+    if (hit.userData.handle) {
+      drag = { handle: hit.userData.handle };
+    } else if (hit.userData.end) {
+      drag = { end: hit.userData.end, divider: hit.userData.pick };
+    } else {
+      const pick = hit.userData.pick;
+      if (pick.kind === "divider") {
+        const f = partFrame(pick.parent), div = f.part.dividers.find(x => x.id === pick.id);
+        const p = onPlane(UP, new THREE.Vector3(0, 0, f.top));
+        const [a, b] = ends(f.part, div);
+        const u = p ? p.x - f.x : 0, v = p ? p.y - f.y : 0;
+        const [across, along] = div.axis === "x" ? [u, v] : [v, u];
+        drag = { divider: pick, offset: p ? [div.at - across, (a + b) / 2 - along] : [0, 0] };
+      } else if (pick.kind === "tray") {
+        const t = design.trays.find(x => x.id === pick.id), [, , z] = trayPlace(design, t), i = inner(design);
+        const p = onPlane(UP, new THREE.Vector3(0, 0, z + t.height));
+        drag = { tray: t.id, offset: p ? [t.x - (p.x + i.w / 2), t.y - (p.y + i.d / 2)] : [0, 0], z: z + t.height };
+      } else {
+        // The box and lid are picked with a tap but not moved: a drag turns the view.
+        return;
+      }
+      if (!isPicked(pick.kind, pick.id)) { selected = pick; onSelect(pick); draw(); }
+    }
     controls.enabled = false;
     canvas.setPointerCapture(e.pointerId);
-    if (hit.userData.end) {
-      drag = { divider: hit.userData.divider, end: hit.userData.end };
-    } else if (hit.userData.divider) {
-      const div = design.dividers.find(x => x.id === hit.userData.divider);
-      const [f, e] = ends(design, div), p = insidePoint() || { across: div.at, along: (f + e) / 2 };
-      const { across, along } = div.axis === "x" ? { across: p.u, along: p.v } : { across: p.v, along: p.u };
-      drag = { divider: div.id, offset: [div.at - across, (f + e) / 2 - along] };
-      if (selected !== div.id) { selected = div.id; onSelect(div.id); setDesign(design); }
-    } else {
-      drag = { handle: hit.userData.handle };
-    }
   });
 
   canvas.addEventListener("pointermove", e => {
     if (!drag || !design) return;
     hitAt(e);
     if (drag.divider) {
-      const div = design.dividers.find(x => x.id === drag.divider), p = insidePoint();
-      if (!div || !p) return;
-      const [across, along] = div.axis === "x" ? [p.u, p.v] : [p.v, p.u];
-      if (drag.end) onDividerEnd(div.id, drag.end, along, false);
-      else onDivider(div.id, { at: across + drag.offset[0], mid: along + drag.offset[1] }, false);
+      const pick = drag.divider, f = partFrame(pick.parent);
+      const div = f && f.part.dividers.find(x => x.id === pick.id);
+      const p = div && onPlane(UP, new THREE.Vector3(0, 0, f.top));
+      if (!p) return;
+      const u = p.x - f.x, v = p.y - f.y, [across, along] = div.axis === "x" ? [u, v] : [v, u];
+      if (drag.end) onDividerEnd(pick.parent, pick.id, drag.end, along, false);
+      else onDivider(pick.parent, pick.id, { at: across + drag.offset[0], mid: along + drag.offset[1] }, false);
+    } else if (drag.tray) {
+      const p = onPlane(UP, new THREE.Vector3(0, 0, drag.z)), i = inner(design);
+      if (p) onTray(drag.tray, { x: p.x + i.w / 2 + drag.offset[0], y: p.y + i.d / 2 + drag.offset[1] }, false);
     } else if (drag.handle === "width") {
-      const local = onPlane(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, design.height / 2));
+      const local = onPlane(UP, new THREE.Vector3(0, 0, design.height / 2));
       if (local) onResize({ width: 2 * (local.x - HANDLE_GAP) }, false);
     } else if (drag.handle === "depth") {
-      const local = onPlane(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, design.height / 2));
+      const local = onPlane(UP, new THREE.Vector3(0, 0, design.height / 2));
       if (local) onResize({ depth: 2 * (-local.y - HANDLE_GAP) }, false);
     } else if (drag.handle === "height") {
       // A vertical plane facing the camera, through the handle.
@@ -264,23 +323,23 @@ export function createView(host, { onDivider, onDividerEnd, onResize, onSelect }
     drag = null;
     controls.enabled = true;
     if (!was || !commit) return;
-    if (was.end) onDividerEnd(was.divider, was.end, null, true);
-    else if (was.divider) onDivider(was.divider, null, true);
+    if (was.end) onDividerEnd(was.divider.parent, was.divider.id, was.end, null, true);
+    else if (was.divider) onDivider(was.divider.parent, was.divider.id, null, true);
+    else if (was.tray) onTray(was.tray, null, true);
     else onResize(null, true);
   }
   const up = e => {
     touches = Math.max(0, touches - 1);
-    if (drag) { endDrag(true); return; }
-    // A tap on empty space (not a turn of the view) clears the selection.
-    if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 6 && selected) {
-      hitAt(e);
-      const onDiv = ray.intersectObjects(dividerHolder.children.filter(o => o.userData.divider)).length;
-      if (!onDiv) { selected = null; onSelect(null); setDesign(design); }
+    if (drag) { endDrag(true); down = null; return; }
+    // A tap (not a turn of the view) picks what is under it, or clears the pick.
+    if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 6) {
+      const pick = pickAt(e)?.userData.pick || null;
+      if (pick ? !isPicked(pick.kind, pick.id) : selected) { selected = pick; onSelect(pick); draw(); }
     }
     down = null;
   };
   canvas.addEventListener("pointerup", up);
-  canvas.addEventListener("pointercancel", e => { touches = Math.max(0, touches - 1); if (drag) endDrag(true); });
+  canvas.addEventListener("pointercancel", () => { touches = Math.max(0, touches - 1); if (drag) endDrag(true); });
 
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
@@ -295,7 +354,7 @@ export function createView(host, { onDivider, onDividerEnd, onResize, onSelect }
   resize();
   renderer.setAnimationLoop(() => { controls.update(); placeCorner(); renderer.render(scene, camera); });
 
-  /** Screen position (CSS pixels in the canvas) of a point in the case frame, for tests. */
+  /** Screen position (CSS pixels) of a point in the case frame, for tests. */
   function screenPoint([x, y, z]) {
     group.updateMatrixWorld();
     const p = new THREE.Vector3(x, y, z).applyMatrix4(group.matrixWorld).project(camera);
@@ -303,5 +362,9 @@ export function createView(host, { onDivider, onDividerEnd, onResize, onSelect }
     return { x: r.left + (p.x + 1) / 2 * r.width, y: r.top + (1 - p.y) / 2 * r.height };
   }
 
-  return { setMeshes, setDesign, setMode, select, frame, get heightCorner() { return corner; }, screenPoint, get dragging() { return !!drag; } };
+  return {
+    setMeshes, setDesign, select, frame, screenPoint,
+    get heightCorner() { return corner; },
+    get dragging() { return !!drag; },
+  };
 }
