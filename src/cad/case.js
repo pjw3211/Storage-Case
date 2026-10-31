@@ -4,7 +4,7 @@
 //
 // CAD frame: millimetres, Z up, X across the width, front faces -Y. The box
 // is centred on X = Y = 0 with its floor on Z = 0.
-import { inner, ends, boxPart, trayPart } from "../design.js";
+import { inner, ends, boxPart, trayPart, slotLayout } from "../design.js";
 
 // A rounded rectangle centred on the origin, extruded up from z0.
 function slab(R, w, d, r, z0, h) {
@@ -66,11 +66,47 @@ export function buildLid(R, d) {
   return plate.fuse(lip);
 }
 
+// The box (or a tray) with slot-in dividers: its walls and floor plus the
+// ribs that make a channel for each divider.
+export function buildSlotted(R, d) {
+  let solid = buildShell(R, d);
+  for (const b of slotLayout(d).rails) solid = solid.fuse(boxSolid(R, b));
+  return solid;
+}
+
+// Every slot-in divider of a part, laid flat side by side to print, or null
+// if there are none. Each lies on its face: length along X, height along Y.
+export function buildPieces(R, d) {
+  const { pieces } = slotLayout(d);
+  if (!pieces.length) return null;
+  const t = d.divider, GAP = 4;
+  let all = null, y = 0;
+  for (const p of pieces) {
+    const L = p.b - p.a, H = p.z1 - p.z0;
+    let s = boxSolid(R, { min: [0, y, 0], max: [L, y + H, t] });
+    for (const n of p.notches) {
+      const u = n.at - p.a;
+      const lo = n.z0 - p.z0 <= 0.01 ? -0.5 : n.z0 - p.z0, hi = n.z1 - p.z0 >= H - 0.01 ? H + 0.5 : n.z1 - p.z0;
+      s = s.cut(boxSolid(R, { min: [u - n.w / 2, y + lo, -0.5], max: [u + n.w / 2, y + hi, t + 0.5] }));
+    }
+    all = all ? all.fuse(s) : s;
+    y += H + GAP;
+  }
+  return all;
+}
+
 /** Every part to print: [{ id, name, solid }]. */
 export function buildCase(R, d) {
-  const parts = [{ id: "box", name: "Box", solid: buildBox(R, boxPart(d)) }];
+  const slot = d.dividerStyle !== "fixed";
+  const parts = [];
+  const add = (id, name, part) => {
+    parts.push({ id, name, solid: slot ? buildSlotted(R, part) : buildBox(R, part) });
+    const pieces = slot && buildPieces(R, part);
+    if (pieces) parts.push({ id: id + "-dividers", name: name + " dividers", solid: pieces });
+  };
+  add("box", "Box", boxPart(d));
   if (d.lid === "lift") parts.push({ id: "lid", name: "Lid", solid: buildLid(R, d) });
-  (d.trays || []).forEach((t, k) => parts.push({ id: "tray-" + (k + 1), name: `Tray ${k + 1}`, solid: buildBox(R, trayPart(d, t)) }));
+  (d.trays || []).forEach((t, k) => add("tray-" + (k + 1), `Tray ${k + 1}`, trayPart(d, t)));
   return parts;
 }
 
